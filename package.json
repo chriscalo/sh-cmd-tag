@@ -1,0 +1,31 @@
+{
+  "name": "sh-cmd-tag",
+  "version": "1.0.0",
+  "description": "Template tag functions for shell command execution with streaming output, safe interpolation, and flexible I/O control",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js"
+  },
+  "scripts": {
+    "test": "node --test --no-warnings *.test.js",
+    "test:verbose": "DEBUG=test node --test --no-warnings *.test.js"
+  },
+  "keywords": [
+    "shell",
+    "command",
+    "execution",
+    "template",
+    "literal",
+    "process",
+    "spawn",
+    "child_process"
+  ],
+  "author": "chris.calo@gmail.com",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "volta": {
+    "node": "24.5.0"
+  }
+}
