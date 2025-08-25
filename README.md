@@ -48,18 +48,14 @@ for await (const chunk of sh.stream`npm install`) {
 
 ## API Reference
 
-### `sh` - Async Command Execution
-
-Execute commands asynchronously with automatic escaping:
+### `sh` - Async Command Execution with Shell Expansion
 
 ```javascript
 const result = await sh`command ${arg}`;
 // Returns ProcessResult with .output, .ok, .error properties
 ```
 
-### `cmd` - Sync Command Execution
-
-Execute commands synchronously:
+### `cmd` - Async Command Execution without Shell Expansion
 
 ```javascript
 const result = cmd`command ${arg}`;
