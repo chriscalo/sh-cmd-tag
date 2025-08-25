@@ -3,14 +3,14 @@ import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
 import { createReadStream, writeFileSync, unlinkSync } from "node:fs";
 import { join, dirname } from "node:path";
-import { 
-  sh, 
-  cmd, 
-  ProcessError, 
-  ProcessResult, 
-  markSafeString, 
-  isSafeString, 
-  shellEscape 
+import {
+  sh,
+  cmd,
+  ProcessError,
+  ProcessResult,
+  markSafeString,
+  isSafeString,
+  shellEscape
 } from "./index.js";
 
 const DEBUG = process.env.DEBUG?.includes("test");

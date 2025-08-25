@@ -11,7 +11,7 @@ npm test  # Runs all 127 tests with Node.js test runner
 npm run test:verbose  # Runs tests with debug output
 ```
 
-**CRITICAL DIRECTIVE FOR CLAUDE:** ALWAYS run the full test suite after making ANY changes to ensure no regressions. This project has 127 comprehensive tests covering:
+**CRITICAL DIRECTIVE FOR CLAUDE:** ALWAYS run the full test suite after making ANY changes to ensure no regressions. This project has a comprehensive test suite covering:
 - Core shell execution functionality
 - Security and escaping mechanisms  
 - Streaming output processing
