@@ -1674,3 +1674,70 @@ function oneLine(strings, ...values) {
     .replace(/\s+/g, " ")
     .trim();
 }
+
+test("module exports Process class", async () => {
+  const { Process } = await import("./index.js");
+  
+  const actual = typeof Process;
+  const expected = "function";
+  assert.equal(actual, expected);
+});
+
+test("creates Process instance with command string", async () => {
+  const { Process } = await import("./index.js");
+  const proc = new Process("echo hello");
+  
+  const actual = proc instanceof Process;
+  const expected = true;
+  assert.equal(actual, expected);
+  
+  const actualCommand = proc.command;
+  const expectedCommand = "echo hello";
+  assert.equal(actualCommand, expectedCommand);
+});
+
+test("Process uses default configuration", async () => {
+  const { Process } = await import("./index.js");
+  const proc = new Process("echo hello");
+  
+  const actual = proc.config;
+  const expected = { immediate: true, shell: true };
+  assert.deepEqual(actual, expected);
+});
+
+test("Process merges custom config with defaults", async () => {
+  const { Process } = await import("./index.js");
+  const proc = new Process("echo hello", { immediate: false, shell: false });
+  
+  const actual = proc.config;
+  const expected = { immediate: false, shell: false };
+  assert.deepEqual(actual, expected);
+});
+
+test("Process config is immutable", async () => {
+  const { Process } = await import("./index.js");
+  const proc = new Process("echo hello", { immediate: false });
+  
+  const config = proc.config;
+  assert.throws(() => {
+    config.immediate = true;
+  }, TypeError);
+});
+
+test("Process with immediate true starts automatically", async () => {
+  const { Process } = await import("./index.js");
+  const proc = new Process("echo hello", { immediate: true });
+  
+  const actual = proc.started;
+  const expected = true;
+  assert.equal(actual, expected);
+});
+
+test("Process with immediate false prevents automatic start", async () => {
+  const { Process } = await import("./index.js");
+  const proc = new Process("echo hello", { immediate: false });
+  
+  const actual = proc.started;
+  const expected = false;
+  assert.equal(actual, expected);
+});

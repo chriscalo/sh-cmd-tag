@@ -2,10 +2,10 @@
 
 ## TDD Task Tracking
 
-- [ ] **Task 1:** `module exports Process class`
+- [x] **Task 1:** `module exports Process class`
 ```javascript
 test("module exports Process class", async () => {
-  const { Process } = await import("./process.js");
+  const { Process } = await import("./index.js");
   
   const actual = typeof Process;
   const expected = "function";
@@ -13,10 +13,10 @@ test("module exports Process class", async () => {
 });
 ```
 
-- [ ] **Task 2:** `creates Process instance with command string`
+- [x] **Task 2:** `creates Process instance with command string`
 ```javascript
 test("creates Process instance with command string", async () => {
-  const { Process } = await import("./process.js");
+  const { Process } = await import("./index.js");
   const proc = new Process("echo hello");
   
   const actual = proc instanceof Process;
@@ -29,10 +29,10 @@ test("creates Process instance with command string", async () => {
 });
 ```
 
-- [ ] **Task 3:** `Process uses default configuration`
+- [x] **Task 3:** `Process uses default configuration`
 ```javascript
 test("Process uses default configuration", async () => {
-  const { Process } = await import("./process.js");
+  const { Process } = await import("./index.js");
   const proc = new Process("echo hello");
   
   const actual = proc.config;
@@ -41,10 +41,10 @@ test("Process uses default configuration", async () => {
 });
 ```
 
-- [ ] **Task 4:** `Process merges custom config with defaults`
+- [x] **Task 4:** `Process merges custom config with defaults`
 ```javascript
 test("Process merges custom config with defaults", async () => {
-  const { Process } = await import("./process.js");
+  const { Process } = await import("./index.js");
   const proc = new Process("echo hello", { immediate: false, shell: false });
   
   const actual = proc.config;
@@ -53,10 +53,10 @@ test("Process merges custom config with defaults", async () => {
 });
 ```
 
-- [ ] **Task 5:** `Process config is immutable`
+- [x] **Task 5:** `Process config is immutable`
 ```javascript
 test("Process config is immutable", async () => {
-  const { Process } = await import("./process.js");
+  const { Process } = await import("./index.js");
   const proc = new Process("echo hello", { immediate: false });
   
   const config = proc.config;
@@ -66,10 +66,10 @@ test("Process config is immutable", async () => {
 });
 ```
 
-- [ ] **Task 6:** `Process with immediate true starts automatically`
+- [x] **Task 6:** `Process with immediate true starts automatically`
 ```javascript
 test("Process with immediate true starts automatically", async () => {
-  const { Process } = await import("./process.js");
+  const { Process } = await import("./index.js");
   const proc = new Process("echo hello", { immediate: true });
   
   const actual = proc.started;
@@ -78,10 +78,10 @@ test("Process with immediate true starts automatically", async () => {
 });
 ```
 
-- [ ] **Task 7:** `Process with immediate false prevents automatic start`
+- [x] **Task 7:** `Process with immediate false prevents automatic start`
 ```javascript
 test("Process with immediate false prevents automatic start", async () => {
-  const { Process } = await import("./process.js");
+  const { Process } = await import("./index.js");
   const proc = new Process("echo hello", { immediate: false });
   
   const actual = proc.started;
@@ -93,7 +93,7 @@ test("Process with immediate false prevents automatic start", async () => {
 - [ ] **Task 8:** `start starts deferred process`
 ```javascript
 test("start starts deferred process", async () => {
-  const { Process } = await import("./process.js");
+  const { Process } = await import("./index.js");
   const proc = new Process("echo hello", { immediate: false });
   
   proc.start();
@@ -107,7 +107,7 @@ test("start starts deferred process", async () => {
 - [ ] **Task 9:** `start throws error if already started`
 ```javascript
 test("start throws error if already started", async () => {
-  const { Process } = await import("./process.js");
+  const { Process } = await import("./index.js");
   const proc = new Process("echo hello", { immediate: false });
   
   proc.start();
@@ -122,7 +122,7 @@ test("start throws error if already started", async () => {
 ```javascript
 test("output getter provides stdout stream access", async () => {
   const { Readable } = await import("node:stream");
-  const { Process } = await import("./process.js");
+  const { Process } = await import("./index.js");
   const proc = new Process("echo hello", { immediate: true });
   
   assert.ok(proc.output instanceof Readable);
@@ -133,7 +133,7 @@ test("output getter provides stdout stream access", async () => {
 ```javascript
 test("debug getter provides stderr stream access", async () => {
   const { Readable } = await import("node:stream");
-  const { Process } = await import("./process.js");
+  const { Process } = await import("./index.js");
   const proc = new Process("echo hello", { immediate: true });
   
   assert.ok(proc.debug instanceof Readable);
@@ -144,7 +144,7 @@ test("debug getter provides stderr stream access", async () => {
 ```javascript
 test("input getter provides stdin stream access", async () => {
   const { Writable } = await import("node:stream");
-  const { Process } = await import("./process.js");
+  const { Process } = await import("./index.js");
   const proc = new Process("cat", { immediate: true });
   
   assert.ok(proc.input instanceof Writable);
@@ -155,7 +155,7 @@ test("input getter provides stdin stream access", async () => {
 ```javascript
 test("stream getters provide access before process starts", async () => {
   const { Readable, Writable } = await import("node:stream");
-  const { Process } = await import("./process.js");
+  const { Process } = await import("./index.js");
   const proc = new Process("echo hello", { immediate: false });
   
   assert.ok(proc.output instanceof Readable);
@@ -167,7 +167,7 @@ test("stream getters provide access before process starts", async () => {
 - [ ] **Task 14:** Process is awaitable with then method
 ```javascript
 test("Process is awaitable with then method", async () => {
-  const { Process } = await import("./process.js");
+  const { Process } = await import("./index.js");
   const proc = new Process("echo hello", { immediate: false });
   
   assert.ok(typeof proc.then === "function");
@@ -177,7 +177,7 @@ test("Process is awaitable with then method", async () => {
 - [ ] **Task 15:** then auto-starts deferred process
 ```javascript
 test("then auto-starts deferred process", async () => {
-  const { Process } = await import("./process.js");
+  const { Process } = await import("./index.js");
   const proc = new Process("echo hello", { immediate: false });
   
   proc.then(() => {});
@@ -217,7 +217,7 @@ test("then rejects with ProcessError on failure", async () => {
 - [ ] **Task 18:** pipe with array creates new Process
 ```javascript
 test("pipe with array creates new Process", async () => {
-  const { Process } = await import("./process.js");
+  const { Process } = await import("./index.js");
   const proc1 = new Process("echo hello", { immediate: false });
   
   const proc2 = proc1.pipe(["cat"]);
@@ -229,7 +229,7 @@ test("pipe with array creates new Process", async () => {
 - [ ] **Task 19:** pipe auto-starts source process
 ```javascript
 test("pipe auto-starts source process", async () => {
-  const { Process } = await import("./process.js");
+  const { Process } = await import("./index.js");
   const proc1 = new Process("echo hello", { immediate: false });
   
   proc1.pipe(["cat"]);
@@ -243,7 +243,7 @@ test("pipe auto-starts source process", async () => {
 - [ ] **Task 20:** pipe connects process output to next process input
 ```javascript
 test("pipe connects process output to next process input", async () => {
-  const { Process } = await import("./process.js");
+  const { Process } = await import("./index.js");
   const proc1 = new Process("echo hello", { immediate: false });
   
   const proc2 = proc1.pipe(["cat"]);
@@ -288,7 +288,7 @@ test("debug false prevents stderr forwarding", async () => {
 - [ ] **Task 23:** Process captures stdout output
 ```javascript
 test("Process captures stdout output", async () => {
-  const { Process } = await import("./process.js");
+  const { Process } = await import("./index.js");
   const proc = new Process("echo hello world");
   
   const result = await proc;
@@ -302,7 +302,7 @@ test("Process captures stdout output", async () => {
 - [ ] **Task 24:** Process captures stderr output
 ```javascript
 test("Process captures stderr output", async () => {
-  const { Process } = await import("./process.js");
+  const { Process } = await import("./index.js");
   const proc = new Process("node -e 'console.error(\"error message\")'");
   
   const result = await proc;

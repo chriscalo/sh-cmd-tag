@@ -42,7 +42,7 @@ function shellEscape(value) {
 }
 
 // ProcessResult class for successful command execution
-export class ProcessResult {
+class ProcessResult {
   constructor({ ok, error, output, debug }) {
     this.ok = ok;
     this.error = error;
@@ -52,7 +52,7 @@ export class ProcessResult {
 }
 
 // ProcessError class for failed command execution
-export class ProcessError extends Error {
+class ProcessError extends Error {
   constructor({ message, code, output, debug }) {
     super(message);
     this.name = "ProcessError";
@@ -728,12 +728,80 @@ const shSyncBase = makeExecTag(true, true);
 const cmdSyncBase = makeExecTag(false, true);
 
 // Create the main export functions with chainable properties
-export const sh = addChainableProps(shBase, true, false);
-export const cmd = addChainableProps(cmdBase, false, false);
+const sh = addChainableProps(shBase, true, false);
+const cmd = addChainableProps(cmdBase, false, false);
 
 // Add sync variants
 sh.sync = addChainableProps(shSyncBase, true, true);
 cmd.sync = addChainableProps(cmdSyncBase, false, true);
 
-// Export safe string functions for testing
-export { markSafeString, isSafeString, shellEscape };
+/**
+ * Process class that encapsulates child process execution with streaming
+ * output and enhanced control capabilities.
+ */
+class Process {
+  static #defaults = { immediate: true, shell: true };
+  
+  #commandString;
+  #config;
+  #childProcess;
+  
+  /**
+   * Creates a new Process instance.
+   * @param {string} commandString - The command to execute
+   * @param {object} config - Configuration options
+   */
+  constructor(commandString, config = {}) {
+    this.#commandString = commandString;
+    this.#config = Object.freeze({ 
+      ...Process.#defaults,
+      ...config,
+    });
+    
+    if (this.config.immediate) {
+      this.start();
+    }
+  }
+  
+  /**
+   * Gets the command string for this process.
+   * @returns {string} The command string
+   */
+  get command() {
+    return this.#commandString;
+  }
+  
+  /**
+   * Gets whether the process has been started.
+   * @returns {boolean} True if process has started
+   */
+  get started() {
+    return Boolean(this.#childProcess);
+  }
+  
+  /**
+   * Gets the configuration for this process.
+   * @returns {object} The configuration object
+   */
+  get config() {
+    return this.#config;
+  }
+  
+  /**
+   * Starts the process execution.
+   */
+  start() {
+    this.#childProcess = {};
+  }
+}
+
+export {
+  sh,
+  cmd,
+  ProcessResult,
+  ProcessError,
+  markSafeString,
+  isSafeString,
+  shellEscape,
+  Process,
+};
