@@ -24,10 +24,15 @@ Use when you need to implement tasks using strict TDD workflow:
 ```
 Execute TDD task `[task-name]` from `[design-file]`.
 
-- Follow strict TDD: 🟢 Green → 🔴 Red → 🟢 Green → [ASK TO REFACTOR] → 🟢 Refactor → ✅ Mark Complete  
+- Follow strict TDD:
+  - 🟢 Green (baseline)
+  - 🔴 Red (failing test) 
+  - 🟢 Green (implementation)
+  - 🟢 Refactor
+  - ✅ Mark Complete  
 - Work through Green-Red-Green automatically until implementation
-- STOP after implementation and ask user if they want to refactor
-- Refactor is optional - only if user wants it
+- STOP after implementation and say "Let's refactor"
+- Refactoring is always part of the TDD process
 - Continue refactoring until user says done
 - Mark task completed in `*.tasks.md`: `- [x] task description`
 ```
@@ -89,10 +94,10 @@ Implement tasks using strict TDD workflow and mark completed tasks:
 - Write minimal implementation to make tests pass
 - Focus on functionality, not perfection
 - Ensure all tests pass (new and existing)
-- **STOP and ask user if they want to refactor**
+- **STOP and say "Let's refactor" to begin refactoring step**
 
 #### Step 4: 🟢 Green (Interactive Refactor)
-- **Only proceed if user wants to refactor**
+- **Begin refactoring collaboration with user**
 - Collaboratively improve code quality with user
 - Maintain test coverage throughout
 - Keep all tests passing during refactoring
@@ -153,12 +158,12 @@ Implement minimal solution:
 - Write code to make tests pass
 - Run full test suite: `npm test`
 - Verify no regressions introduced
-- STOP and ask user if they want to refactor
+- STOP and say "Let's refactor" to begin refactoring step
 ```
 
 #### Step 4: 🟢 Refactor (Interactive)
 ```
-Only if user wants to refactor:
+Begin refactoring collaboration:
 - Ask user what they want to improve
 - Apply improvements while maintaining tests
 - Verify tests continue to pass after changes
