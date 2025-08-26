@@ -229,16 +229,22 @@ console.log(process.config);  // { immediate: false, debug: true, ... }
 ### Stream Access
 
 #### `process.output`
-**Type**: `ReadableStream | null`  
-**Purpose**: Direct access to the child process stdout stream for advanced users.
+**Type**: `ReadableStream`
+**Purpose**: Direct access to stdout stream for advanced users. Available immediately upon Process creation, allowing setup of event handlers and piping before process starts. When process starts, this stream is internally connected to the child process stdout.
 
-#### `process.debug`  
-**Type**: `ReadableStream | null`  
-**Purpose**: Direct access to the child process stderr stream for advanced users.
+#### `process.debug`
+**Type**: `ReadableStream`
+**Purpose**: Direct access to stderr stream for advanced users. Available immediately upon Process creation, allowing setup of event handlers and piping before process starts. When process starts, this stream is internally connected to the child process stderr.
 
 #### `process.input`
-**Type**: `WritableStream | null`  
-**Purpose**: Direct access to the child process stdin stream for advanced users.
+**Type**: `WritableStream`
+**Purpose**: Direct access to stdin stream for advanced users. Available immediately upon Process creation, allowing setup of event handlers and piping before process starts. When process starts, this stream is internally connected to the child process stdin.
+
+**Stream Architecture**: Each Process instance maintains exposed streams that are created in the constructor and remain stable throughout the process lifecycle. When `start()` is called, these exposed streams are internally piped to/from the actual child process streams, ensuring seamless data flow while allowing pre-process setup.
+
+**Input Buffering**: Data written to the `input` stream before process start is automatically buffered and flushed to the child process stdin once the process begins execution. This allows users to write input data before calling `start()`. The input stream avoids eagerly consuming data when possible, only buffering what is explicitly written to it.
+
+**Output Streaming**: The `output` and `debug` streams begin emitting data only after the process starts and the child process produces output. No buffering is needed since data flows directly from child process to exposed streams.
 
 ```javascript
 const process = sh({ immediate: false })`long-running-command`;

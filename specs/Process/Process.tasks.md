@@ -104,7 +104,7 @@ test("start starts deferred process", async () => {
 });
 ```
 
-- [ ] **Task 9:** `start throws error if already started`
+- [x] **Task 9:** `start throws error if already started`
 ```javascript
 test("start throws error if already started", async () => {
   const { Process } = await import("./index.js");
@@ -118,7 +118,7 @@ test("start throws error if already started", async () => {
 });
 ```
 
-- [ ] **Task 10:** output getter provides stdout stream access
+- [x] **Task 10:** output getter provides stdout stream access
 ```javascript
 test("output getter provides stdout stream access", async () => {
   const { Readable } = await import("node:stream");
@@ -129,7 +129,7 @@ test("output getter provides stdout stream access", async () => {
 });
 ```
 
-- [ ] **Task 11:** debug getter provides stderr stream access
+- [x] **Task 11:** debug getter provides stderr stream access
 ```javascript
 test("debug getter provides stderr stream access", async () => {
   const { Readable } = await import("node:stream");
@@ -140,7 +140,7 @@ test("debug getter provides stderr stream access", async () => {
 });
 ```
 
-- [ ] **Task 12:** input getter provides stdin stream access
+- [x] **Task 12:** input getter provides stdin stream access
 ```javascript
 test("input getter provides stdin stream access", async () => {
   const { Writable } = await import("node:stream");
@@ -151,16 +151,174 @@ test("input getter provides stdin stream access", async () => {
 });
 ```
 
-- [ ] **Task 13:** stream getters provide access before process starts
+- [ ] **Task 13a:** exposed streams available before process starts
 ```javascript
-test("stream getters provide access before process starts", async () => {
+test("exposed streams available before process starts", async () => {
   const { Readable, Writable } = await import("node:stream");
   const { Process } = await import("./index.js");
   const proc = new Process("echo hello", { immediate: false });
   
+  const actual = proc.started;
+  const expected = false;
+  assert.equal(actual, expected);
+  
   assert.ok(proc.output instanceof Readable);
   assert.ok(proc.debug instanceof Readable);
   assert.ok(proc.input instanceof Writable);
+});
+```
+
+- [ ] **Task 13b:** exposed streams remain stable after process starts
+```javascript
+test("exposed streams remain stable after process starts", async () => {
+  const { Readable, Writable } = await import("node:stream");
+  const { Process } = await import("./index.js");
+  const proc = new Process("echo hello", { immediate: false });
+  
+  const outputBefore = proc.output;
+  const debugBefore = proc.debug;
+  const inputBefore = proc.input;
+  
+  proc.start();
+  
+  const outputAfter = proc.output;
+  const debugAfter = proc.debug;
+  const inputAfter = proc.input;
+  
+  assert.equal(outputBefore, outputAfter);
+  assert.equal(debugBefore, debugAfter);
+  assert.equal(inputBefore, inputAfter);
+});
+```
+
+<!-- FIXME: I don't understand this test name -->
+- [ ] **Task 13c:** stream handlers set before start receive data
+```javascript
+test("stream handlers set before start receive data", async () => {
+  const { Process } = await import("./index.js");
+  const proc = new Process("echo hello world", { immediate: false });
+  
+  let capturedOutput = "";
+  let capturedDebug = "";
+  
+  proc.output.on("data", (chunk) => {
+    capturedOutput += chunk.toString();
+  });
+  
+  proc.debug.on("data", (chunk) => {
+    capturedDebug += chunk.toString();
+  });
+  
+  proc.start();
+  await proc;
+  
+  const actual = capturedOutput.trim();
+  const expected = "hello world";
+  assert.equal(actual, expected);
+});
+```
+
+- [ ] **Task 13d:** input written before start flows to child process
+```javascript
+test("input written before start flows to child process", async () => {
+  const { Process } = await import("./index.js");
+  const proc = new Process("cat", { immediate: false });
+  
+  let capturedOutput = "";
+  proc.output.on("data", (chunk) => {
+    capturedOutput += chunk.toString();
+  });
+  
+  proc.input.write("test input\n");
+  proc.input.end();
+  
+  proc.start();
+  await proc;
+  
+  const actual = capturedOutput.trim();
+  const expected = "test input";
+  assert.equal(actual, expected);
+});
+```
+
+- [ ] **Task 13e:** input buffers multiple writes before start
+```javascript
+test("input buffers multiple writes before start", async () => {
+  const { Process } = await import("./index.js");
+  const proc = new Process("cat", { immediate: false });
+  
+  let capturedOutput = "";
+  proc.output.on("data", (chunk) => {
+    capturedOutput += chunk.toString();
+  });
+  
+  proc.input.write("first\n");
+  proc.input.write("second\n");
+  proc.input.write("third\n");
+  proc.input.end();
+  
+  proc.start();
+  await proc;
+  
+  const actual = capturedOutput.trim();
+  const expected = "first\nsecond\nthird";
+  assert.equal(actual, expected);
+});
+```
+
+- [ ] **Task 13f:** input does not eagerly consume from piped streams
+```javascript
+test("input does not eagerly consume from piped streams", async () => {
+  const { Readable } = await import("node:stream");
+  const { Process } = await import("./index.js");
+  
+  let readCount = 0;
+  const sourceStream = new Readable({
+    read() {
+      readCount++;
+      if (readCount === 1) {
+        this.push("data\n");
+      } else {
+        this.push(null);
+      }
+    }
+  });
+  
+  const proc = new Process("cat", { immediate: false });
+  sourceStream.pipe(proc.input);
+  
+  const actualReadCount = readCount;
+  const expectedReadCount = 0;
+  assert.equal(actualReadCount, expectedReadCount);
+});
+```
+
+- [ ] **Task 13g:** output streams only emit after process starts
+```javascript
+test("output streams only emit after process starts", async () => {
+  const { Process } = await import("./index.js");
+  const proc = new Process("echo hello", { immediate: false });
+  
+  let outputReceived = false;
+  let debugReceived = false;
+  
+  proc.output.on("data", () => {
+    outputReceived = true;
+  });
+  
+  proc.debug.on("data", () => {
+    debugReceived = true;
+  });
+  
+  await new Promise(resolve => setTimeout(resolve, 10));
+  
+  const actualOutput = outputReceived;
+  const expectedOutput = false;
+  assert.equal(actualOutput, expectedOutput);
+  
+  const actualDebug = debugReceived;
+  const expectedDebug = false;
+  assert.equal(actualDebug, expectedDebug);
 });
 ```
 

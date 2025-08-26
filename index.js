@@ -1,6 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { Readable, Writable } from "node:stream";
 
 // Safe string infrastructure
 const SHELL_SAFE = Symbol('shellSafe');
@@ -788,13 +789,41 @@ class Process {
   }
   
   /**
+   * Gets the stdout stream for this process.
+   * @returns {ReadableStream | null} The stdout stream
+   */
+  get output() {
+    return this.#childProcess?.stdout || null;
+  }
+  
+  /**
+   * Gets the stderr stream for this process.
+   * @returns {ReadableStream | null} The stderr stream
+   */
+  get debug() {
+    return this.#childProcess?.stderr || null;
+  }
+  
+  /**
+   * Gets the stdin stream for this process.
+   * @returns {WritableStream | null} The stdin stream
+   */
+  get input() {
+    return this.#childProcess?.stdin || null;
+  }
+  
+  /**
    * Starts the process execution.
    */
   start() {
     if (this.started) {
       throw new Error(`Process "${this.command}" has already been started`);
     }
-    this.#childProcess = {};
+    this.#childProcess = {
+      stdout: new Readable({ read() {} }),
+      stderr: new Readable({ read() {} }),
+      stdin: new Writable({ write() {} }),
+    };
   }
 }
 

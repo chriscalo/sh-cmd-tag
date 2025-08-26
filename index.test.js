@@ -1763,3 +1763,27 @@ test("start() throws error if already started", async () => {
     proc.start();
   }, Error);
 });
+
+test("output getter provides stdout stream access", async () => {
+  const { Readable } = await import("node:stream");
+  const { Process } = await import("./index.js");
+  const proc = new Process("echo hello", { immediate: true });
+  
+  assert.ok(proc.output instanceof Readable);
+});
+
+test("debug getter provides stderr stream access", async () => {
+  const { Readable } = await import("node:stream");
+  const { Process } = await import("./index.js");
+  const proc = new Process("echo hello", { immediate: true });
+  
+  assert.ok(proc.debug instanceof Readable);
+});
+
+test("input getter provides stdin stream access", async () => {
+  const { Writable } = await import("node:stream");
+  const { Process } = await import("./index.js");
+  const proc = new Process("cat", { immediate: true });
+  
+  assert.ok(proc.input instanceof Writable);
+});
