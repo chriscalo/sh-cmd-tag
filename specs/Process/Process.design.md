@@ -2,11 +2,16 @@
 
 ## Overview
 
-This document outlines the design for an enhanced Process class that provides advanced process control capabilities including deferred execution, stream access, and introspection while maintaining complete backward compatibility with existing APIs.
+This document outlines the design for adding a `Process` class that provides a
+clean interface to the underlying child process, including deferred execution,
+stream access, read-only access to the command config options, and the ability
+to await the process completion.
 
 ## Current State
 
-The existing implementation uses inline promise-based execution with manual stream handling spread across `executeAsyncCommand()` and `executeSyncCommand()` functions (index.js:218-318, 152-215).
+The existing implementation uses inline promise-based execution with manual
+stream handling spread across `executeAsyncCommand()` and `executeSyncCommand()` 
+functions (`index.js`:218-318, 152-215).
 
 ## New Process Class Architecture
 
@@ -15,7 +20,7 @@ The existing implementation uses inline promise-based execution with manual stre
 1. **Deferred Execution Control**: Optional immediate execution vs manual start
 2. **Stream Exposure**: Direct access to stdout, stderr, and stdin streams  
 3. **Process Introspection**: Read-only access to command and configuration
-4. **Thenable Interface**: Seamless Promise integration for backward compatibility
+4. **Thenable Interface**: Exposing a Promise-like interface
 
 ### Class Definition
 
@@ -30,12 +35,10 @@ class Process {
   #childProcess;
   #commandString;
   #config;
-  #isStarted = false;
   
-  constructor(child, commandString, config = {}) {
-    this.#childProcess = child;
+  constructor(commandString, config = {}) {
     this.#commandString = commandString;
-    this.#config = { immediate: true, ...config };
+    this.#config = Object.freeze(structuredClone({ immediate: true, ...config }));
     
     if (this.#config.immediate) {
       this.#start();
@@ -47,26 +50,49 @@ class Process {
     return this.#commandString;
   }
   
+  get started() {
+    return Boolean(this.#childProcess);
+  }
+  
   get config() {
-    return { ...this.#config }; // Return copy to prevent mutation
+    return this.#config;
   }
   
   // Stream access for advanced users
-  get stdout() {
+  get output() {
     return this.#childProcess?.stdout;
   }
   
-  get stderr() {
+  get debug() {
     return this.#childProcess?.stderr;
   }
   
-  get stdin() {
+  get input() {
     return this.#childProcess?.stdin;
   }
   
+  pipe(command) {
+    if (!this.started) {
+      this.start();
+    }
+    
+    if (Array.isArray(command)) {
+      // Template literal parts - create new Process
+      const nextProcess = sh(command);
+      this.output.pipe(nextProcess.input);
+      return nextProcess;
+    } else {
+      // Stream destination
+      return this.output.pipe(command);
+    }
+  }
+  
   // Manual execution for deferred processes
+  // FIXME: make it safe to call this (don't throw)
+  // FIXME: have this return a promise
+  // FIXME: explore different method names
   exec() {
-    if (!this.#isStarted) {
+    if (!this.started) {
       this.#start();
       return this;
     }
@@ -74,7 +100,23 @@ class Process {
   }
   
   #start() {
-    this.#isStarted = true;
+    // Parse command for execution
+    const parts = parseCommand(this.#commandString.trim());
+    const cmd = parts[0];
+    const args = parts.slice(1);
+    
+    // Build spawn options from config
+    const spawnOptions = {
+      shell: this.#config.shell !== false, // Default to true unless explicitly false
+      cwd: this.#config.cwd,
+      env: { ...process.env, ...this.#config.env },
+      stdio: ['pipe', 'pipe', 'pipe']
+    };
+    
+    // Create child process using Node.js spawn
+    this.#childProcess = spawn(cmd, args, spawnOptions);
+    
+    // Initialize stream handlers
     this.#initStreams();
   }
   
@@ -94,9 +136,11 @@ class Process {
     });
   }
   
+  // FIXME: I wonder if we should store a promise internally that we chain off
+  // of here.
   async then(resolve, reject) {
     // Auto-start if not immediate and not manually started
-    if (!this.#isStarted) {
+    if (!this.started) {
       this.#start();
     }
     
@@ -140,10 +184,25 @@ class Process {
 const process = sh`echo "hello"`;  // Starts immediately
 
 // Deferred execution (new capability)
-const process = sh({ immediate: false })`echo "hello"`;  // Waits for process.exec()
+// Waits for process.start()
+const process = sh({ immediate: false })`echo "hello"`;
 ```
 
 ## New API Methods
+
+### Process Chaining
+
+#### `process.pipe(command)`
+**Type**: `Process | WritableStream` (returns new Process for chaining or destination stream)  
+**Purpose**: Pipe the process output to another command or stream destination.
+
+```javascript
+// Chainable process piping
+const result = await sh`cat data.txt`.pipe`grep "pattern"`.pipe`head -5`;
+
+// Pipe to stream
+sh`cat large-file.txt`.pipe(fs.createWriteStream('backup.txt'));
+```
 
 ### Process Introspection
 
@@ -157,7 +216,7 @@ console.log(process.command);  // "echo 'hello world'"
 ```
 
 #### `process.config`
-**Type**: `object` (read-only copy)  
+**Type**: `object` (read-only copy)
 **Purpose**: Returns a copy of the process configuration to prevent mutation.
 
 ```javascript
@@ -167,15 +226,15 @@ console.log(process.config);  // { immediate: false, debug: true, ... }
 
 ### Stream Access
 
-#### `process.stdout`
+#### `process.output`
 **Type**: `ReadableStream | null`  
 **Purpose**: Direct access to the child process stdout stream for advanced users.
 
-#### `process.stderr`  
+#### `process.debug`  
 **Type**: `ReadableStream | null`  
 **Purpose**: Direct access to the child process stderr stream for advanced users.
 
-#### `process.stdin`
+#### `process.input`
 **Type**: `WritableStream | null`  
 **Purpose**: Direct access to the child process stdin stream for advanced users.
 
@@ -183,13 +242,13 @@ console.log(process.config);  // { immediate: false, debug: true, ... }
 const process = sh({ immediate: false })`long-running-command`;
 
 // Set up custom stream handling
-process.stdout.on('data', chunk => {
+process.output.on('data', chunk => {
   // Custom processing
   customLogger.info(chunk.toString());
 });
 
-process.stderr.pipe(errorLogStream);
-process.exec(); // Start execution
+process.debug.pipe(errorLogStream);
+process.start(); // Start execution
 ```
 
 ### Manual Execution
@@ -202,7 +261,7 @@ process.exec(); // Start execution
 ```javascript
 const process = sh({ immediate: false })`command`;
 // ... set up streams, logging, etc ...
-process.exec();  // Start the process
+process.start();  // Start the process
 await process;   // Wait for completion
 ```
 
@@ -225,15 +284,15 @@ const result4 = sh.sync`sync-command`;
 const process = sh({ immediate: false })`complex-command`;
 
 // Set up custom stream handling
-process.stdout.on('data', chunk => {
+process.output.on('data', chunk => {
   metrics.recordOutput(chunk.length);
   customProcessor.process(chunk);
 });
 
-process.stderr.pipe(errorAggregator);
+process.debug.pipe(errorAggregator);
 
 // Start execution when ready
-process.exec();
+process.start();
 const result = await process;
 ```
 
@@ -247,7 +306,7 @@ logger.info(`Executing: ${process.command}`);
 logger.debug(`Config: ${JSON.stringify(process.config)}`);
 
 // Monitor streams for debugging
-process.stderr.on('data', chunk => {
+process.debug.on('data', chunk => {
   debugger.captureStderr(process.command, chunk.toString());
 });
 
@@ -259,19 +318,21 @@ const result = await process;
 ```javascript
 const process = sh({ 
   immediate: false, 
-  output: false,  // Don't auto-pipe to process.stdout
-  debug: false    // Don't auto-pipe to process.stderr
+  output: false, // Don't auto-pipe to process.stdout
+  debug: false, // Don't auto-pipe to process.stderr
 })`data-processing-command`;
 
 // Custom stream processing pipeline
-process.stdout
+process.output
   .pipe(dataTransform)
   .pipe(dataValidator)
   .pipe(dataOutput);
 
-process.stderr.pipe(customErrorHandler);
+// Or use process chaining
+const result = await sh`generate-data`.pipe`transform`.pipe`validate`;
 
-process.exec();
+process.debug.pipe(customErrorHandler);
+process.start();
 await process;
 ```
 
@@ -281,7 +342,7 @@ await process;
 
 **Critical Requirement**: All existing APIs must work unchanged. The Process class implements the thenable interface (`then()` method) to ensure seamless integration with existing Promise-based code.
 
-**Test Coverage**: All 127 existing tests must pass without modification.
+**Test Coverage**: All existing tests must pass without modification.
 
 ### 2. Stream Lifecycle Management
 
@@ -292,7 +353,7 @@ await process;
 
 ### 3. Error Handling
 
-**Process Not Started**: `exec()` throws if called on already-started process
+**Process Not Started**: `start()` is safe to call multiple times (idempotent)
 **Stream Access**: Stream getters return `null` if child process not available
 **Promise Compatibility**: `then()` method maintains identical error handling to existing implementation
 
@@ -309,11 +370,10 @@ await process;
 ```javascript
 // sh function integration
 export async function sh(strings, ...values) {
-  const childProcess = streaming$(strings, ...values);
   const command = buildShellExpression(strings, values);
   const options = /* extract from chainable API */;
   
-  return new Process(childProcess, command, options);
+  return new Process(command, options);
 }
 ```
 
@@ -328,7 +388,7 @@ console.log(process.config);  // Shows all merged configuration options
 ## Testing Strategy
 
 ### 1. Existing Test Compatibility
-- All 127 existing tests must pass unchanged
+- All existing tests must pass unchanged
 - No modifications to existing test files
 
 ### 2. New Feature Tests
@@ -340,7 +400,7 @@ test("immediate: false prevents automatic execution", async () => {
   // Process should not have started yet
   assert.equal(process.config.immediate, false);
   
-  process.exec();
+  process.start();
   const result = await process;
   assert.equal(result.output.trim(), "test");
 });
@@ -348,15 +408,15 @@ test("immediate: false prevents automatic execution", async () => {
 
 #### Stream Access Tests
 ```javascript
-test("stdout getter provides access to child process stdout", async () => {
+test("output getter provides access to child process stdout", async () => {
   const process = sh({ immediate: false })`echo "test"`;
   
   let capturedData = "";
-  process.stdout.on('data', chunk => {
+  process.output.on('data', chunk => {
     capturedData += chunk.toString();
   });
   
-  process.exec();
+  process.start();
   await process;
   assert.equal(capturedData.trim(), "test");
 });
@@ -376,10 +436,10 @@ test("command getter returns resolved command string", () => {
 ```javascript
 test("exec() throws on already started process", () => {
   const process = sh({ immediate: false })`echo "test"`;
-  process.exec();
+  process.start();
   
   assert.throws(() => {
-    process.exec();
+    process.start();
   }, /Process has already been started/);
 });
 ```
