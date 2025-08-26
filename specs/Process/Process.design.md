@@ -196,11 +196,13 @@ const process = sh({ immediate: false })`echo "hello"`;
 **Type**: `Process | WritableStream` (returns new Process for chaining or destination stream)  
 **Purpose**: Pipe the process output to another command or stream destination.
 
+**OPEN QUESTION**: What should `pipe()` return when piping to a stream? The design shows it returns the destination stream, but this seems inconsistent with typical stream piping behavior which returns the destination stream from the `.pipe()` call.
+
 ```javascript
 // Chainable process piping
 const result = await sh`cat data.txt`.pipe`grep "pattern"`.pipe`head -5`;
 
-// Pipe to stream
+// Pipe to stream - UNCLEAR what this should return
 sh`cat large-file.txt`.pipe(fs.createWriteStream('backup.txt'));
 ```
 
