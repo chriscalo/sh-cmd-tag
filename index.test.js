@@ -1741,3 +1741,25 @@ test("Process with immediate false prevents automatic start", async () => {
   const expected = false;
   assert.equal(actual, expected);
 });
+
+test("start starts deferred process", async () => {
+  const { Process } = await import("./index.js");
+  const proc = new Process("echo hello", { immediate: false });
+  
+  proc.start();
+  
+  const actual = proc.started;
+  const expected = true;
+  assert.equal(actual, expected);
+});
+
+test("start() throws error if already started", async () => {
+  const { Process } = await import("./index.js");
+  const proc = new Process("echo hello", { immediate: false });
+  
+  proc.start();
+  
+  assert.throws(() => {
+    proc.start();
+  }, Error);
+});

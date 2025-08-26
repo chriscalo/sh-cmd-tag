@@ -90,7 +90,7 @@ test("Process with immediate false prevents automatic start", async () => {
 });
 ```
 
-- [ ] **Task 8:** `start starts deferred process`
+- [x] **Task 8:** `start starts deferred process`
 ```javascript
 test("start starts deferred process", async () => {
   const { Process } = await import("./index.js");

@@ -791,6 +791,9 @@ class Process {
    * Starts the process execution.
    */
   start() {
+    if (this.started) {
+      throw new Error(`Process "${this.command}" has already been started`);
+    }
     this.#childProcess = {};
   }
 }
