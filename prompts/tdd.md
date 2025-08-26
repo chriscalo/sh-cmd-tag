@@ -13,7 +13,7 @@ Use when you need to break down a design document into tasks:
 Plan TDD tasks for `[design-file]`.
 
 - Decompose the design into discrete tasks
-- One behavior : one test
+- One behavior <=> one test
 - List all tasks upfront with test names
 - Walk through each task for user approval
 ```
@@ -24,9 +24,10 @@ Use when you need to implement tasks using strict TDD workflow:
 ```
 Execute TDD task `[task-name]` from `[design-file]`.
 
-- Follow strict TDD: 🟢 Green → 🔴 Red → 🟢 Green → 🟢 Refactor
+- Follow strict TDD: 🟢 Green → 🔴 Red → 🟢 Green → 🟢 Refactor → ✅ Mark Complete  
 - Work through Green-Red-Green automatically
 - Refactor interactively with user
+- Mark task completed in `*.tasks.md`: `- [x] task description`
 ```
 
 ## Workflow Modes
@@ -39,8 +40,28 @@ Decompose the design into tasks interactively:
 - Walk through each task for user approval
 - User says "approved" to proceed with TDD cycle
 
+**Example task format:**
+
+- [ ] **Task 1:** test("module exports Process class")
+```js
+test("module exports Process class", () => {
+  const Process = require("./process");
+  assert(typeof Process === "function");
+});
+```
+
+- [ ] **Task 2:** test("creates Process with command string")
+```js
+test("creates Process with command string", () => {
+  const Process = require("./process");
+  const proc = new Process("ls -la");
+  assert(proc instanceof Process);
+});
+```
+
+
 ### Execution Mode  
-Implement tasks using strict TDD workflow:
+Implement tasks using strict TDD workflow and mark completed tasks:
 
 #### Step 1: 🟢 Green (Establish Baseline)
 - Ensure all existing tests pass
@@ -62,6 +83,10 @@ Implement tasks using strict TDD workflow:
 - Maintain test coverage throughout
 - Keep all tests passing during refactoring
 
+#### Step 5: ✅ Mark Complete
+- Update `*.tasks.md` file to mark task as completed: `- [x] task description`
+- Verify task fully satisfies design requirements
+
 ## Process Flow
 
 ### 1. Design Analysis
@@ -82,6 +107,7 @@ For the entire design:
 #### b) Individual Approval
 - **Walk through each task** one by one
 - **User says "approved"** to proceed with TDD cycle
+- **Write approved task to `*.tasks.md` file** as `- [ ] task description`
 - **Execute complete cycle** before moving to next task
 
 ### 3. Implementation Cycle
@@ -120,7 +146,23 @@ Improve code quality:
 - Verify tests continue to pass after changes
 ```
 
+#### Step 5: ✅ Mark Complete
+```
+Update task tracking:
+- Edit `*.tasks.md` file to mark task completed: `- [x] task description`
+- Confirm task meets all design requirements
+- Proceed to next pending task
+```
+
 ## Task Template
+
+Each task in `*.tasks.md` must use checkbox format:
+
+```markdown
+- [ ] Task: [Brief Description] - `test("test name")`
+```
+
+Detailed task breakdown format:
 
 ```markdown
 ## Task: [Brief Description]
@@ -161,9 +203,9 @@ Let me first examine the design document to understand the requirements...
 3. `test("accepts options object")`
 4. `test("throws error for invalid command")`
 
-I'll now walk you through each task for approval. When you say "approved", I'll proceed with the TDD cycle for that task.
+I'll now walk you through each task for approval. When you say "approved", I'll write the task to `Process.tasks.md` and proceed with the TDD cycle for that task.
 
-**Task 1:** `test("module exports Process class")`
+- [ ] **Task 1:** `test("module exports Process class")`
 ```js
 test("module exports Process class", () => {
   const Process = require("./process");
@@ -186,6 +228,8 @@ test("module exports Process class", () => {
 - Show clear test cases before implementation
 - Explain the TDD phases for each task
 - Get explicit approval before moving to next task
+- Write each approved task to `*.tasks.md` file as `- [ ] task description` immediately after approval
+- Mark tasks as completed `- [x] task description` after full TDD cycle
 - Demonstrate running tests after each phase
 
 ### Implementation Standards
