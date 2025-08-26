@@ -42,20 +42,30 @@ Decompose the design into tasks interactively:
 
 **Example task format:**
 
-- [ ] **Task 1:** test("module exports Process class")
-```js
-test("module exports Process class", () => {
-  const Process = require("./process");
-  assert(typeof Process === "function");
+- [ ] **Task 1:** module exports Process class
+
+```javascript
+test("module exports Process class", async () => {
+  const { Process } = await import("./process.js");
+  
+  const actual = typeof Process;
+  const expected = "function";
+  assert.equal(actual, expected);
 });
 ```
 
-- [ ] **Task 2:** test("creates Process with command string")
-```js
-test("creates Process with command string", () => {
-  const Process = require("./process");
-  const proc = new Process("ls -la");
-  assert(proc instanceof Process);
+- [ ] **Task 2:** Process creates instance with command string
+
+```javascript
+test("Process creates instance with command string", async () => {
+  const { Process } = await import("./process.js");
+  const proc = new Process("echo hello");
+  
+  assert.ok(proc instanceof Process);
+  
+  const actual = proc.command;
+  const expected = "echo hello";
+  assert.equal(actual, expected);
 });
 ```
 
@@ -105,10 +115,12 @@ For the entire design:
 - **Present complete list** to user upfront
 
 #### b) Individual Approval
-- **Walk through each task** one by one
-- **User says "approved"** to proceed with TDD cycle
-- **Write approved task to `*.tasks.md` file** as `- [ ] task description`
-- **Execute complete cycle** before moving to next task
+- **Walk through each task** one by one for planning approval only
+- **Present task with complete test code** using proper format
+- **User says "approved"** to write task to `*.tasks.md` file
+- **Write approved task with full test code** in checkbox format  
+- **DO NOT execute TDD cycle** during planning mode
+- **Continue to next task** for approval until all tasks planned
 
 ### 3. Implementation Cycle
 
@@ -156,10 +168,19 @@ Update task tracking:
 
 ## Task Template
 
-Each task in `*.tasks.md` must use checkbox format:
+Each task in `*.tasks.md` must use this exact format:
 
 ```markdown
-- [ ] Task: [Brief Description] - `test("test name")`
+- [ ] **Task N:** brief description without test() wrapper
+  ```javascript
+  test("complete sentence describing behavior", async () => {
+    const { ModuleName } = await import("./module.js");
+    
+    const actual = someValue;
+    const expected = expectedValue;
+    assert.equal(actual, expected);
+  });
+  ```
 ```
 
 Detailed task breakdown format:
@@ -203,13 +224,17 @@ Let me first examine the design document to understand the requirements...
 3. `test("accepts options object")`
 4. `test("throws error for invalid command")`
 
-I'll now walk you through each task for approval. When you say "approved", I'll write the task to `Process.tasks.md` and proceed with the TDD cycle for that task.
+I'll now walk you through each task for approval. When you say "approved", I'll write the task to `Process.tasks.md` (same directory as the design file) in proper format.
 
-- [ ] **Task 1:** `test("module exports Process class")`
-```js
-test("module exports Process class", () => {
-  const Process = require("./process");
-  assert(typeof Process === "function");
+**Task 1:** module exports Process class
+
+```javascript
+test("module exports Process class", async () => {
+  const { Process } = await import("./process.js");
+  
+  const actual = typeof Process;
+  const expected = "function";
+  assert.equal(actual, expected);
 });
 ```
 ````
@@ -224,13 +249,17 @@ test("module exports Process class", () => {
 5. **Performance**: Optimization and efficiency concerns
 
 ### Communication Guidelines
-- Present one task at a time for approval
-- Show clear test cases before implementation
-- Explain the TDD phases for each task
-- Get explicit approval before moving to next task
-- Write each approved task to `*.tasks.md` file as `- [ ] task description` immediately after approval
-- Mark tasks as completed `- [x] task description` after full TDD cycle
-- Demonstrate running tests after each phase
+- **PLANNING MODE ONLY**: Present one task at a time for approval
+- Show complete test code with proper formatting
+- Use complete sentence test names (unless part of grouped tests)
+- Use const expected/actual pattern in all tests (except booleans)
+- Use assert.ok() for boolean assertions, not assert.equal(actual, true)
+- NO comments in test code unless absolutely necessary
+- Use assert.deepEqual to avoid multiple assertions when testing objects
+- Get explicit approval before writing to `*.tasks.md` file
+- Write tasks file next to the design file: if planning from `specs/Process/Process.design.md`, create `specs/Process/Process.tasks.md`
+- **DO NOT execute TDD cycles during planning**
+- **DO NOT jump between planning and execution modes**
 
 ### Implementation Standards
 - Follow existing code patterns in the project
