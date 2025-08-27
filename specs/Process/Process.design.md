@@ -106,30 +106,6 @@ functions (`index.js`:218-318, 152-215).
 import { PassThrough, Writable } from "node:stream";
 
 /**
- * Recursively freezes an object and all its nested properties
- */
-// FIXME: define helpers AFTER they are used
-function deepFreeze(obj) {
-  if (obj === null || typeof obj !== "object") return obj;
-  
-  Object.getOwnPropertyNames(obj).forEach(prop => {
-    const value = obj[prop];
-    if (value && typeof value === "object") {
-      deepFreeze(value);
-    }
-  });
-  
-  return Object.freeze(obj);
-}
-
-// FIXME: define helpers AFTER they are used
-function isTemplateTagInvocation(...args) {
-  // FIXME: is this all to ensure it's a template tag call?
-  return Array.isArray(args[0]);
-}
-
-
-/**
  * Process class that encapsulates child process execution with streaming
  * output and enhanced control capabilities.
  */
@@ -145,10 +121,14 @@ class Process {
   #resolve;
   #reject;
   #io;
+  #type;
+  #factory;
   
-  constructor(commandString, config = {}) {
+  constructor(commandString, config = {}, type = 'sh', factory = sh) {
     this.#command = commandString;
     this.#config = deepFreeze({ ...Process.#defaults, ...config });
+    this.#type = type;
+    this.#factory = factory;
     
     // Create stable streams available immediately
     this.#io = {
@@ -158,11 +138,10 @@ class Process {
     };
     
     // Create promise and store resolvers immediately
-    // TODO: why new Promise and not withResolvers()?
-    this.#promise = new Promise((resolve, reject) => {
-      this.#resolve = resolve;
-      this.#reject = reject;
-    });
+    const { promise, resolve, reject } = Promise.withResolvers();
+    this.#promise = promise;
+    this.#resolve = resolve;
+    this.#reject = reject;
     
     if (this.#config.immediate) {
       this.#start();
@@ -199,9 +178,13 @@ class Process {
     }
     
     if (isTemplateTagInvocation(...args)) {
-      // TODO: how do we know whether to use sh vs cmd and which options to
-      // inherit from this process?
-      const nextProcess = sh(...args);
+      // Use the same factory and inherit relevant config
+      const inheritedConfig = {
+        shell: this.#config.shell,
+        env: this.#config.env,
+        cwd: this.#config.cwd,
+      };
+      const nextProcess = this.#factory(inheritedConfig)(...args);
       this.output.pipe(nextProcess.input);
       return nextProcess;
     }
@@ -275,7 +258,6 @@ class Process {
   
   // Promise interface for await compatibility
   // This makes Process thenable so 'await process' resolves to ProcessResult
-  // FIXME: single-quoted string 'await process'
   then(resolve, reject) {
     if (!this.started) {
       this.#start();
@@ -329,8 +311,7 @@ class Process {
     const onError = (err) => {
       const error = new ProcessError({
         message: err.message,
-        // FIXME: single-quoted string 'UNKNOWN'
-        code: err.code || 'UNKNOWN',
+        code: err.code || "UNKNOWN",
         output: this.#stdout,
         debug: this.#stderr
       });
@@ -347,11 +328,37 @@ class Process {
       }
     };
     
-    // FIXME: single-quoted string 'exit'
-    this.#process.on('exit', onExit);
-    // FIXME: single-quoted string 'error'
-    this.#process.on('error', onError);
+    this.#process.on("exit", onExit);
+    this.#process.on("error", onError);
   }
+}
+
+/**
+ * Recursively freezes an object and all its nested properties
+ */
+function deepFreeze(obj) {
+  if (obj === null || typeof obj !== "object") return obj;
+  
+  Object.getOwnPropertyNames(obj).forEach(prop => {
+    const value = obj[prop];
+    if (value && typeof value === "object") {
+      deepFreeze(value);
+    }
+  });
+  
+  return Object.freeze(obj);
+}
+
+/**
+ * Checks if a function was invoked as a tagged template literal.
+ * A true template tag call provides a special `raw` property on the
+ * first argument (the strings array).
+ * @param {...any} args The arguments passed to the function.
+ * @returns {boolean} True if the function was called as a tagged template literal.
+ */
+function isTemplateTagInvocation(...args) {
+  const [strings] = args;
+  return Array.isArray(strings) && 'raw' in strings;
 }
 ```
 
@@ -389,11 +396,8 @@ const process = sh({ immediate: false })`echo "hello"`;
 const result = await sh`cat data.txt`.pipe`grep "pattern"`.pipe`head -5`;
 
 // Pipe to stream (returns WritableStream)
-// FIXME: single-quoted string 'backup.txt'
-const writeStream = sh`cat large-file.txt`.pipe(fs.createWriteStream('backup.txt'));
-// FIXME: single-quoted string 'finish'
-// FIXME: single-quoted string 'Done'
-writeStream.on('finish', () => console.log('Done'));
+const writeStream = sh`cat large-file.txt`.pipe(fs.createWriteStream("backup.txt"));
+writeStream.on("finish", () => console.log("Done"));
 ```
 
 ### Process Introspection
@@ -404,8 +408,7 @@ writeStream.on('finish', () => console.log('Done'));
 
 ```javascript
 const process = sh`echo "hello ${name}"`;
-// FIXME: single-quoted string 'hello world'
-console.log(process.command);  // "echo 'hello world'"
+console.log(process.command);  // "echo \"hello world\""
 ```
 
 #### `process.config`
@@ -441,8 +444,7 @@ console.log(process.config);  // { immediate: false, debug: true, ... }
 const process = sh({ immediate: false })`long-running-command`;
 
 // Set up custom stream handling
-// FIXME: single-quoted string 'data'
-process.output.on('data', chunk => {
+process.output.on("data", chunk => {
   // Custom processing
   customLogger.info(chunk.toString());
 });
@@ -497,8 +499,7 @@ try {
 const process = sh({ immediate: false })`complex-command`;
 
 // Set up custom stream handling
-// FIXME: single-quoted string 'data'
-process.output.on('data', chunk => {
+process.output.on("data", chunk => {
   metrics.recordOutput(chunk.length);
   customProcessor.process(chunk);
 });
@@ -520,8 +521,7 @@ logger.info(`Executing: ${process.command}`);
 logger.debug(`Config: ${JSON.stringify(process.config)}`);
 
 // Monitor streams for debugging
-// FIXME: single-quoted string 'data'
-process.debug.on('data', chunk => {
+process.debug.on("data", chunk => {
   debugger.captureStderr(process.command, chunk.toString());
 });
 
@@ -594,8 +594,7 @@ await process;
 ```javascript
 // sh function integration - returns Process that resolves to ProcessResult
 export function sh(strings, ...values) {
-  // FIXME: single-quoted string 'object'
-  if (typeof strings === 'object' && !Array.isArray(strings)) {
+  if (typeof strings === "object" && !Array.isArray(strings)) {
     // Called as sh({options}) - return configured function
     const options = strings;
     return (strings, ...values) => {
@@ -660,8 +659,7 @@ test("output getter provides access to child process stdout", async () => {
   const process = sh({ immediate: false })`echo "test"`;
   
   let capturedData = "";
-  // FIXME: single-quoted string 'data'
-  process.output.on('data', chunk => {
+  process.output.on("data", chunk => {
     capturedData += chunk.toString();
   });
   
@@ -676,8 +674,7 @@ test("output getter provides access to child process stdout", async () => {
 test("command getter returns resolved command string", () => {
   const name = "world";
   const process = sh`echo "hello ${name}"`;
-  // FIXME: single-quoted string 'hello world'
-  assert.equal(process.command, "echo 'hello world'");
+  assert.equal(process.command, "echo \"hello world\"");
 });
 ```
 
