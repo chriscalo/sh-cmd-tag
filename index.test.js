@@ -10,7 +10,7 @@ import {
   ProcessResult,
   markSafeString,
   isSafeString,
-  shellEscape
+  shellEscape,
 } from "./index.js";
 
 const DEBUG = process.env.DEBUG?.includes("test");
@@ -34,7 +34,6 @@ test("sh`` returns Promise<ProcessResult>", async () => {
 });
 
 test("sh throws ProcessError on command failure", async () => {
-  
   await assert.rejects(
     async () => {
       await sh`exit 42`;
