@@ -52,6 +52,18 @@ For each TODO:
 **b) Proposal**
 - **Solution**: Describe the specific fix/improvement
 - **Changes Required**: List all files/locations that need modification
+- **MANDATORY CODE BLOCKS**: Show exact current code and proposed fix using this format:
+
+**Current Code:**
+```[language]
+[exact current code]
+```
+
+**Proposed Fix:**
+```[language]  
+[exact proposed code]
+```
+
 - **Approach**: Explain the implementation strategy
 - **Considerations**: Highlight any potential breaking changes
 
@@ -61,12 +73,15 @@ For each TODO:
 - Only proceed once explicitly approved
 
 **d) Implementation**
+- **CRITICAL: Show all code changes** - display the actual before/after code
 - Apply changes to all identified locations
 - Ensure consistency across the codebase
-- Run tests to verify no regressions (if relevant)
+- **Run tests after EVERY change** - use `npm test` to verify no regressions
+- **If tests fail, fix them immediately** - get tests green before continuing
 - Update related documentation if needed
 
 #### 3. Verification
+- **Run final test suite** - confirm all tests pass after implementation
 - Confirm the TODO has been completely addressed
 - Validate that no new issues were introduced
 - Move to the next item
@@ -124,7 +139,24 @@ Let me start with the first TODO...
 
 **Proposal:**
 - Solution: Use structuredClone() and Object.freeze() recursively
-- Changes: Update config getter implementation
+- Changes: Update config getter implementation in index.js line 45
+
+**Code Preview:**
+```javascript
+// BEFORE:
+get config() {
+  // TODO: deep freeze to prevent nested object mutation
+  return { ...this.#config };
+}
+
+// AFTER:
+get config() {
+  return Object.freeze(structuredClone(this.#config));
+}
+```
+
+**CRITICAL**: Every proposal MUST include complete before/after code blocks showing the exact changes.
+
 - Approach: Replace spread with deep clone and freeze
 - Risks: Performance impact for deep configs
 
@@ -164,11 +196,14 @@ Appropriate for systematic cleanup or when TODOs follow patterns across the enti
 
 ### Communication
 - Be explicit about what you're proposing
+- **Always show the actual code changes** in before/after format
 - Explain the reasoning behind each decision
 - Highlight any trade-offs or alternatives considered
 - Ask clarifying questions when requirements are ambiguous
 
 ### Implementation
+- **Run tests after every change** - use `npm test` to verify no regressions
+- **Fix failing tests immediately** - never leave tests in broken state
 - Make atomic commits per TODO when possible
 - Update tests to cover the resolved behavior
 - Remove the TODO comment once fully addressed
