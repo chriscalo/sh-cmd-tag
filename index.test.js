@@ -1481,13 +1481,18 @@ test("cmd safely handles malicious array elements", async () => {
 // Safe String Infrastructure Tests
 test("markSafeString marks strings as safe", () => {
   const safe = markSafeString("already escaped");
+  // FIXME: use actual and expected vars
   assert.equal(isSafeString(safe), true);
+  // FIXME: use actual and expected vars
   assert.equal(String(safe), "already escaped");
 });
 
 test("isSafeString returns false for unmarked strings", () => {
+  // FIXME: use actual and expected vars
   assert.equal(isSafeString("not marked"), false);
+  // FIXME: use actual and expected vars
   assert.equal(isSafeString(123), false);
+  // FIXME: use actual and expected vars
   assert.equal(isSafeString(null), false);
 });
 
@@ -1500,28 +1505,36 @@ test("safe strings can be concatenated", () => {
   const safe1 = markSafeString("--foo='bar'");
   const safe2 = markSafeString("--baz='qux'");
   const combined = markSafeString(`${safe1} ${safe2}`);
+  // FIXME: use actual and expected vars
   assert.equal(isSafeString(combined), true);
+  // FIXME: use actual and expected vars
   assert.equal(String(combined), "--foo='bar' --baz='qux'");
 });
 
 test("shellEscape handles simple strings", () => {
   // Safe strings don't need quotes
+  // FIXME: use actual and expected vars
   assert.equal(shellEscape("hello"), "hello");
   // Strings with spaces get quoted
+  // FIXME: use actual and expected vars
   assert.equal(shellEscape("hello world"), "'hello world'");
 });
 
 test("shellEscape handles empty string", () => {
+  // FIXME: use actual and expected vars
   assert.equal(shellEscape(""), "''");
 });
 
 test("shellEscape handles single quotes", () => {
+  // FIXME: use actual and expected vars
   assert.equal(shellEscape("it's"), "'it'\\''s'");
+  // FIXME: use actual and expected vars
   assert.equal(shellEscape("'quoted'"), "''\\''quoted'\\'''");
 });
 
 test("shellEscape handles already-safe strings", () => {
   const safe = markSafeString("'already escaped'");
+  // FIXME: use actual and expected vars
   assert.equal(shellEscape(safe), "'already escaped'");
 });
 
@@ -1629,6 +1642,7 @@ test("regression test: context-aware escaping prevents injection", async () => {
     } else {
       result = await testCase.template(testCase.input);
     }
+    // FIXME: use actual and expected vars
     assert.equal(result.output, testCase.expectedOutput, 
       `${testCase.name} failed. ` +
       `Expected ${JSON.stringify(testCase.expectedOutput)} ` +
@@ -1657,6 +1671,7 @@ test("prevents all forms of command injection", async () => {
       
     // The output should be exactly the literal payload plus newline
     const expectedOutput = payload + "\n";
+    // FIXME: use actual and expected vars
     assert.equal(result.output, expectedOutput,
       `Expected literal payload in output. ` +
       `Payload: ${JSON.stringify(payload)}, ` +
@@ -1690,6 +1705,7 @@ test("creates Process instance with command string", async () => {
   const expected = true;
   assert.equal(actual, expected);
   
+  // FIXME: use actual and expected vars
   const actualCommand = proc.command;
   const expectedCommand = "echo hello";
   assert.equal(actualCommand, expectedCommand);
