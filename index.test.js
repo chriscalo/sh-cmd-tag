@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import { strict as assert } from "node:assert";
-import { spawn } from "node:child_process";
+import { spawn, execSync } from "node:child_process";
 import { createReadStream, writeFileSync, unlinkSync } from "node:fs";
 import { join, dirname } from "node:path";
 import {
@@ -1481,19 +1481,30 @@ test("cmd safely handles malicious array elements", async () => {
 // Safe String Infrastructure Tests
 test("markSafeString marks strings as safe", () => {
   const safe = markSafeString("already escaped");
-  // FIXME: use actual and expected vars
-  assert.equal(isSafeString(safe), true);
-  // FIXME: use actual and expected vars
-  assert.equal(String(safe), "already escaped");
+  assert.ok(isSafeString(safe));
+  const actual = String(safe);
+  const expected = "already escaped";
+  assert.equal(actual, expected);
 });
 
 test("isSafeString returns false for unmarked strings", () => {
-  // FIXME: use actual and expected vars
-  assert.equal(isSafeString("not marked"), false);
-  // FIXME: use actual and expected vars
-  assert.equal(isSafeString(123), false);
-  // FIXME: use actual and expected vars
-  assert.equal(isSafeString(null), false);
+  {
+    const actual = isSafeString("not marked");
+    const expected = false;
+    assert.equal(actual, expected);
+  }
+  
+  {
+    const actual = isSafeString(123);
+    const expected = false;
+    assert.equal(actual, expected);
+  }
+  
+  {
+    const actual = isSafeString(null);
+    const expected = false;
+    assert.equal(actual, expected);
+  }
 });
 
 test("markSafeString throws for non-strings", () => {
@@ -1505,37 +1516,83 @@ test("safe strings can be concatenated", () => {
   const safe1 = markSafeString("--foo='bar'");
   const safe2 = markSafeString("--baz='qux'");
   const combined = markSafeString(`${safe1} ${safe2}`);
-  // FIXME: use actual and expected vars
-  assert.equal(isSafeString(combined), true);
-  // FIXME: use actual and expected vars
-  assert.equal(String(combined), "--foo='bar' --baz='qux'");
+  
+  {
+    const actual = isSafeString(combined);
+    const expected = true;
+    assert.equal(actual, expected);
+  }
+  
+  {
+    const actual = String(combined);
+    const expected = "--foo='bar' --baz='qux'";
+    assert.equal(actual, expected);
+  }
 });
 
 test("shellEscape handles simple strings", () => {
-  // Safe strings don't need quotes
-  // FIXME: use actual and expected vars
-  assert.equal(shellEscape("hello"), "hello");
+  // Simple strings without special characters don't need quotes
+  {
+    const actual = shellEscape("hello");
+    const expected = "hello";
+    assert.equal(actual, expected);
+  }
+  
   // Strings with spaces get quoted
-  // FIXME: use actual and expected vars
-  assert.equal(shellEscape("hello world"), "'hello world'");
+  {
+    const actual = shellEscape("hello world");
+    const expected = "'hello world'";
+    assert.equal(actual, expected);
+  }
 });
 
 test("shellEscape handles empty string", () => {
-  // FIXME: use actual and expected vars
-  assert.equal(shellEscape(""), "''");
+  const actual = shellEscape("");
+  const expected = "''";
+  assert.equal(actual, expected);
 });
 
-test("shellEscape handles single quotes", () => {
-  // FIXME: use actual and expected vars
-  assert.equal(shellEscape("it's"), "'it'\\''s'");
-  // FIXME: use actual and expected vars
-  assert.equal(shellEscape("'quoted'"), "''\\''quoted'\\'''");
+test("shellEscape handles single quote in middle of string", async () => {
+  const input = "it's";
+  
+  {
+    const actual = shellEscape(input);
+    const expected = String.raw`'it'\''s'`;
+    assert.equal(actual, expected);
+  }
+  
+  {
+    const escaped = shellEscape(input);
+    const command = `printf '%s' ${escaped}`;
+    const actual = execSync(command, { encoding: 'utf8' });
+    const expected = "it's";
+    assert.equal(actual, expected);
+  }
+});
+
+test("shellEscape handles string wrapped in single quotes", async () => {
+  const input = "'quoted'";
+  
+  {
+    const actual = shellEscape(input);
+    const expected = String.raw`''\''quoted'\'''`;
+    assert.equal(actual, expected);
+  }
+  
+  {
+    const escaped = shellEscape(input);
+    const command = `printf '%s' ${escaped}`;
+    const actual = execSync(command, { encoding: 'utf8' });
+    const expected = "'quoted'";
+    assert.equal(actual, expected);
+  }
 });
 
 test("shellEscape handles already-safe strings", () => {
   const safe = markSafeString("'already escaped'");
-  // FIXME: use actual and expected vars
-  assert.equal(shellEscape(safe), "'already escaped'");
+  const actual = shellEscape(safe);
+  const expected = "'already escaped'";
+  assert.equal(actual, expected);
 });
 
 test("shellEscape prevents command injection", () => {
@@ -1600,83 +1657,79 @@ test("object values are shell-escaped in sh execution", async () => {
 });
 
 test("regression test: context-aware escaping prevents injection", async () => {
-  // This test ensures that context-aware escaping correctly prevents command
-  // injection in all quoting contexts while producing natural output
+  {
+    const input = "$(echo TEST)";
+    const result = await sh`echo ${input}`;
+    const actual = result.output;
+    const expected = "$(echo TEST)\n";
+    assert.equal(actual, expected);
+  }
   
-  const testCases = [
-    {
-      name: "unquoted interpolation",
-      template: (val) => sh`echo ${val}`,
-      input: "$(echo TEST)",
-      // Literal text, not executed
-      expectedOutput: "$(echo TEST)\n"
-    },
-    {
-      name: "double quoted interpolation", 
-      template: (val) => sh`echo "${val}"`,
-      input: "$(echo TEST)",
-      // Literal text, not executed
-      expectedOutput: "$(echo TEST)\n"
-    },
-    {
-      name: "single quoted interpolation",
-      template: (val) => sh`echo '${val}'`,
-      input: "$(echo TEST)",
-      // Literal text, not executed
-      expectedOutput: "$(echo TEST)\n"
-    },
-    {
-      name: "mixed interpolation",
-      template: (val1, val2) => sh`echo "${val1}" ${val2}`,
-      input1: "hello",
-      input2: "$(echo WORLD)",
-      // Both literal, not executed
-      expectedOutput: "hello $(echo WORLD)\n"
-    }
-  ];
+  {
+    const input = "$(echo TEST)";
+    const result = await sh`echo "${input}"`;
+    const actual = result.output;
+    const expected = "$(echo TEST)\n";
+    assert.equal(actual, expected);
+  }
   
-  for (const testCase of testCases) {
-    let result;
-    if (testCase.input1 !== undefined) {
-      result = await testCase.template(testCase.input1, testCase.input2);
-    } else {
-      result = await testCase.template(testCase.input);
-    }
-    // FIXME: use actual and expected vars
-    assert.equal(result.output, testCase.expectedOutput, 
-      `${testCase.name} failed. ` +
-      `Expected ${JSON.stringify(testCase.expectedOutput)} ` +
-      `but got: ${JSON.stringify(result.output)}`);
+  {
+    const input = "$(echo TEST)";
+    const result = await sh`echo '${input}'`;
+    const actual = result.output;
+    const expected = "$(echo TEST)\n";
+    assert.equal(actual, expected);
+  }
+  
+  {
+    const input1 = "hello";
+    const input2 = "$(echo WORLD)";
+    const result = await sh`echo "${input1}" ${input2}`;
+    const actual = result.output;
+    const expected = "hello $(echo WORLD)\n";
+    assert.equal(actual, expected);
   }
 });
 
 test("prevents all forms of command injection", async () => {
-  const injectionVectors = [
-    "$(echo PWNED)",
-    "`echo HACKED`", 
-    "benign; echo INJECTED",
-    "benign && echo INJECTED",
-    "benign | echo PIPED",
-  ];
-  
-  for (const payload of injectionVectors) {
+  {
+    const payload = "$(echo PWNED)";
     const result = await sh`echo "${payload}"`;
-    
-    // CRITICAL SECURITY TEST: The payload should appear literally in output
-    // This proves the dangerous command was NOT executed, just treated as text
-    assert.ok(result.output.includes(payload), 
-      `🚨 SECURITY TEST FAILED: Payload should appear literally in output. ` +
-      `Payload: ${JSON.stringify(payload)}, ` +
-      `Output: ${JSON.stringify(result.output)}`);
-      
-    // The output should be exactly the literal payload plus newline
-    const expectedOutput = payload + "\n";
-    // FIXME: use actual and expected vars
-    assert.equal(result.output, expectedOutput,
-      `Expected literal payload in output. ` +
-      `Payload: ${JSON.stringify(payload)}, ` +
-      `Expected: ${JSON.stringify(expectedOutput)}, ` +
-      `Actual: ${JSON.stringify(result.output)}`);
+    const actual = result.output;
+    const expected = "$(echo PWNED)\n";
+    assert.equal(actual, expected);
+  }
+  
+  {
+    const payload = "`echo HACKED`";
+    const result = await sh`echo "${payload}"`;
+    const actual = result.output;
+    const expected = "`echo HACKED`\n";
+    assert.equal(actual, expected);
+  }
+  
+  {
+    const payload = "benign; echo INJECTED";
+    const result = await sh`echo "${payload}"`;
+    const actual = result.output;
+    const expected = "benign; echo INJECTED\n";
+    assert.equal(actual, expected);
+  }
+  
+  {
+    const payload = "benign && echo INJECTED";
+    const result = await sh`echo "${payload}"`;
+    const actual = result.output;
+    const expected = "benign && echo INJECTED\n";
+    assert.equal(actual, expected);
+  }
+  
+  {
+    const payload = "benign | echo PIPED";
+    const result = await sh`echo "${payload}"`;
+    const actual = result.output;
+    const expected = "benign | echo PIPED\n";
+    assert.equal(actual, expected);
   }
 });
 
@@ -1701,14 +1754,10 @@ test("creates Process instance with command string", async () => {
   const { Process } = await import("./index.js");
   const proc = new Process("echo hello");
   
-  const actual = proc instanceof Process;
-  const expected = true;
+  assert.ok(proc instanceof Process);
+  const actual = proc.command;
+  const expected = "echo hello";
   assert.equal(actual, expected);
-  
-  // FIXME: use actual and expected vars
-  const actualCommand = proc.command;
-  const expectedCommand = "echo hello";
-  assert.equal(actualCommand, expectedCommand);
 });
 
 test("Process uses default configuration", async () => {
