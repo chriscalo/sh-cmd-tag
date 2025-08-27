@@ -14,7 +14,8 @@ to await the process completion.
 The Process class implements the Promise interface (`then()`, `catch()`, 
 `finally()`) to maintain backward compatibility:
 
-All these patterns work identically - Process instances resolve to ProcessResult 
+All these patterns work identically - Process instances resolve to
+ProcessResult 
 when awaited, sync variants return ProcessResult directly, and error handling 
 remains unchanged.
 
@@ -88,7 +89,8 @@ const result3 = await process3;
 ## Current State
 
 The existing implementation uses inline promise-based execution with manual
-stream handling spread across `executeAsyncCommand()` and `executeSyncCommand()` 
+stream handling spread across `executeAsyncCommand()` and
+`executeSyncCommand()` 
 functions (`index.js`:218-318, 152-215).
 
 ## New Process Class Architecture
@@ -273,7 +275,7 @@ class Process {
   finally(onFinally) {
     return this.then(
       value => Promise.resolve(onFinally()).then(() => value),
-      reason => Promise.resolve(onFinally()).then(() => Promise.reject(reason))
+      reason => Promise.resolve(onFinally()).then(() => Promise.reject(reason)),
     );
   }
   
@@ -354,7 +356,8 @@ function deepFreeze(obj) {
  * A true template tag call provides a special `raw` property on the
  * first argument (the strings array).
  * @param {...any} args The arguments passed to the function.
- * @returns {boolean} True if the function was called as a tagged template literal.
+ * @returns {boolean} True if the function was called as a tagged
+ *   template literal.
  */
 function isTemplateTagInvocation(...args) {
   const [strings] = args;
@@ -368,7 +371,8 @@ function isTemplateTagInvocation(...args) {
 
 **Type**: `boolean`
 **Default**: `true`
-**Purpose**: Controls whether the process starts immediately upon creation or waits for manual execution.
+**Purpose**: Controls whether the process starts immediately upon creation
+or waits for manual execution.
 
 ```javascript
 // Immediate execution (current behavior, default)
@@ -384,19 +388,22 @@ const process = sh({ immediate: false })`echo "hello"`;
 ### Process Chaining
 
 #### `process.pipe(command)`
-**Type**: `Process | WritableStream` (returns new Process for chaining or destination stream)  
+**Type**: `Process | WritableStream` (returns new Process for chaining or
+destination stream)  
 **Purpose**: Pipe the process output to another command or stream destination.
 
 **Return Behavior**:
 - When piping to template literal parts: Returns new Process for chaining
-- When piping to stream: Returns the destination stream (Node.js standard behavior)
+- When piping to stream: Returns the destination stream (Node.js standard
+  behavior)
 
 ```javascript
 // Chainable process piping (returns Process)
 const result = await sh`cat data.txt`.pipe`grep "pattern"`.pipe`head -5`;
 
 // Pipe to stream (returns WritableStream)
-const writeStream = sh`cat large-file.txt`.pipe(fs.createWriteStream("backup.txt"));
+const writeStream = sh`cat large-file.txt`
+  .pipe(fs.createWriteStream("backup.txt"));
 writeStream.on("finish", () => console.log("Done"));
 ```
 
@@ -424,21 +431,41 @@ console.log(process.config);  // { immediate: false, debug: true, ... }
 
 #### `process.output`
 **Type**: `ReadableStream`
-**Purpose**: Direct access to stdout stream for advanced users. Available immediately upon Process creation, allowing setup of event handlers and piping before process starts. When process starts, this stream is internally connected to the child process stdout.
+**Purpose**: Direct access to stdout stream for advanced users. Available
+immediately upon Process creation, allowing setup of event handlers and
+piping before process starts. When process starts, this stream is internally
+connected to the child process stdout.
 
 #### `process.debug`
 **Type**: `ReadableStream`
-**Purpose**: Direct access to stderr stream for advanced users. Available immediately upon Process creation, allowing setup of event handlers and piping before process starts. When process starts, this stream is internally connected to the child process stderr.
+**Purpose**: Direct access to stderr stream for advanced users. Available
+immediately upon Process creation, allowing setup of event handlers and
+piping before process starts. When process starts, this stream is internally
+connected to the child process stderr.
 
 #### `process.input`
 **Type**: `WritableStream`
-**Purpose**: Direct access to stdin stream for advanced users. Available immediately upon Process creation, allowing setup of event handlers and piping before process starts. When process starts, this stream is internally connected to the child process stdin.
+**Purpose**: Direct access to stdin stream for advanced users. Available
+immediately upon Process creation, allowing setup of event handlers and
+piping before process starts. When process starts, this stream is internally
+connected to the child process stdin.
 
-**Stream Architecture**: Each Process instance maintains exposed streams that are created in the constructor and remain stable throughout the process lifecycle. When `start()` is called, these exposed streams are internally piped to/from the actual child process streams, ensuring seamless data flow while allowing pre-process setup.
+**Stream Architecture**: Each Process instance maintains exposed streams
+that are created in the constructor and remain stable throughout the process
+lifecycle. When `start()` is called, these exposed streams are internally
+piped to/from the actual child process streams, ensuring seamless data flow
+while allowing pre-process setup.
 
-**Input Buffering**: Data written to the `input` stream before process start is automatically buffered and flushed to the child process stdin once the process begins execution. This allows users to write input data before calling `start()`. The input stream avoids eagerly consuming data when possible, only buffering what is explicitly written to it.
+**Input Buffering**: Data written to the `input` stream before process
+start is automatically buffered and flushed to the child process stdin once
+the process begins execution. This allows users to write input data before
+calling `start()`. The input stream avoids eagerly consuming data when
+possible, only buffering what is explicitly written to it.
 
-**Output Streaming**: The `output` and `debug` streams begin emitting data only after the process starts and the child process produces output. No buffering is needed since data flows directly from child process to exposed streams.
+**Output Streaming**: The `output` and `debug` streams begin emitting data
+only after the process starts and the child process produces output. No
+buffering is needed since data flows directly from child process to exposed
+streams.
 
 ```javascript
 const process = sh({ immediate: false })`long-running-command`;
@@ -474,15 +501,17 @@ await process;   // Wait for completion
 
 ```javascript
 // All existing patterns work unchanged - Process resolves to ProcessResult
-const result1 = await sh`echo "test"`;                    // ProcessResult
-const result2 = await sh.safe`might-fail`;               // ProcessResult (with .error)
-const result3 = await sh.interactive`interactive-cmd`;   // ProcessResult  
-const result4 = sh.sync`sync-command`;                   // ProcessResult (not Process)
+const result1 = await sh`echo "test"`;
+const result2 = await sh.safe`might-fail`;
+
+// ProcessResult (with .error)
+const result3 = await sh.interactive`interactive-cmd`;
+const result4 = sh.sync`sync-command`;
 
 // Chainable methods still work
-const result5 = await sh.safe.interactive`cmd`;          // ProcessResult
-const result6 = await cmd.input("data")`cat`;            // ProcessResult
-const result7 = await sh({throw: false})`might-fail`;    // ProcessResult with .error
+const result5 = await sh.safe.interactive`cmd`;
+const result6 = await cmd.input("data")`cat`;
+const result7 = await sh({throw: false})`might-fail`;
 
 // Error handling unchanged
 try {
@@ -555,12 +584,16 @@ await process;
 
 ### 1. Backward Compatibility
 
-**Critical Requirement**: All existing APIs must work unchanged. The Process class implements the full thenable interface (`then()`, `catch()`, `finally()` methods) to ensure seamless integration with existing Promise-based code.
+**Critical Requirement**: All existing APIs must work unchanged. The
+Process class implements the full thenable interface (`then()`, `catch()`,
+`finally()` methods) to ensure seamless integration with existing
+Promise-based code.
 
 **API Compatibility**: 
 - `await sh`command`` → resolves to ProcessResult
 - `sh.sync`command`` → returns ProcessResult directly (no Process instance)
-- `sh.safe`command`` → Process that resolves to ProcessResult with error field instead of rejecting
+- `sh.safe`command`` → Process that resolves to ProcessResult with error
+  field instead of rejecting
 - `sh({options})`command`` → Process with merged configuration
 - All chainable methods return Process instances that resolve to ProcessResult
 
@@ -568,24 +601,33 @@ await process;
 
 ### 2. Stream Lifecycle Management
 
-**Immediate Mode**: Streams are initialized immediately in constructor via `#start()`
-**Deferred Mode**: Streams are initialized when `start()` is called or `then()` is awaited
+**Immediate Mode**: Streams are initialized immediately in constructor via
+`#start()`
+**Deferred Mode**: Streams are initialized when `start()` is called or
+`then()` is awaited
 
-**Auto-start Behavior**: If a deferred process is awaited without calling `start()`, it automatically starts to prevent hanging.
+**Auto-start Behavior**: If a deferred process is awaited without calling
+`start()`, it automatically starts to prevent hanging.
 
 ### 3. Error Handling
 
 **Process Not Started**: `start()` is safe to call multiple times (idempotent)
-**Sync vs Async**: `.sync` variants bypass Process entirely and return ProcessResult directly
+**Sync vs Async**: `.sync` variants bypass Process entirely and return
+ProcessResult directly
 **Stream Access**: Stream getters return `null` if child process not available
-**Promise Compatibility**: `then()` method maintains identical error handling to existing implementation
-**Safe Mode Support**: Respects `throw: false` config to return ProcessResult with error instead of rejecting
+**Promise Compatibility**: `then()` method maintains identical error
+handling to existing implementation
+**Safe Mode Support**: Respects `throw: false` config to return
+ProcessResult with error instead of rejecting
 
 ### 4. Memory and Resource Management
 
-**Stream References**: Getters provide direct access to underlying streams without additional wrappers
-**Configuration Copies**: `config` getter returns defensive copies to prevent mutation
-**Process Lifecycle**: Existing process cleanup and resource management preserved
+**Stream References**: Getters provide direct access to underlying streams
+without additional wrappers
+**Configuration Copies**: `config` getter returns defensive copies to
+prevent mutation
+**Process Lifecycle**: Existing process cleanup and resource management
+preserved
 
 ## Integration Points
 
@@ -623,7 +665,8 @@ export function shSync(strings, ...values) {
 ### Chainable API Preservation
 
 ```javascript
-// All chainable methods (.safe, .interactive, .input) work with new Process class
+// All chainable methods (.safe, .interactive, .input) work with new
+// Process class
 const process = sh.safe.interactive({ immediate: false })`command`;
 console.log(process.config);  // Shows all merged configuration options
 
@@ -730,14 +773,18 @@ test("start() is idempotent and safe to call multiple times", () => {
 - **Zero Migration**: All existing code continues to work unchanged
 
 ### For Advanced Use Cases
-- **Custom Stream Processing**: Direct stream manipulation for specialized workflows
+- **Custom Stream Processing**: Direct stream manipulation for specialized
+  workflows
 - **Process Orchestration**: Better control over when processes start
-- **Monitoring and Observability**: Built-in introspection for debugging and metrics
+- **Monitoring and Observability**: Built-in introspection for debugging
+  and metrics
 
 ## Success Criteria
 
 1. **Full Backward Compatibility**: All existing APIs work unchanged
 2. **New Feature Functionality**: All new features work as designed
 3. **Performance Parity**: No performance regression in existing usage patterns
-4. **Enhanced Capabilities**: Advanced users can leverage new process control features
-5. **Test Coverage**: Comprehensive test suite covers both existing and new functionality
+4. **Enhanced Capabilities**: Advanced users can leverage new process
+   control features
+5. **Test Coverage**: Comprehensive test suite covers both existing and new
+   functionality
