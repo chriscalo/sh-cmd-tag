@@ -1,27 +1,25 @@
 # sh-cmd-tag Product Requirements Document
 
-**Version:** v4  
-**Date:** 2025-01-09  
+**Version:** v5  
+**Date:** 2025-09-03  
 **Status:** Approved  
 
 ## Product Vision
 
-**sh-cmd-tag** is a security-first Node.js library that provides ergonomic template literal syntax for shell command execution, eliminating common security vulnerabilities while maintaining the power and flexibility developers expect from shell scripting.
+**sh-cmd-tag** is a Node.js library that provides ergonomic template literal syntax for shell command execution, prioritizing simplicity and developer experience while ensuring security. It delivers an intuitive and readable API for working with shell commands, eliminating common security vulnerabilities without sacrificing flexibility or power.
 
 ## Product Goals
 
-### Primary Goals
-1. **Security-First Design:** Eliminate shell injection vulnerabilities through automatic escaping
-2. **Ergonomic API:** Template literal syntax that feels natural and readable
+### User-Facing Goals
+1. **Ergonomic API:** Template literal syntax that feels natural and readable
+2. **Developer Experience:** Intuitive design with clear error messages and easy debugging
 3. **Dual Execution Modes:** Support both shell features (sh) and direct execution (cmd)
-4. **Advanced Process Control:** Enhanced Process class for sophisticated workflows
-5. **Performance Excellence:** Real-time streaming with <50ms latency
+4. **Interactive Process Streaming:** Real-time bidirectional streaming for both input and output with minimal latency
 
-### Secondary Goals  
-1. **Backward Compatibility:** Zero breaking changes during enhancements
+### Development Goals  
+1. **Test-Driven Development:** Extensive, fast test suite run on every change with TDD workflow to prevent regressions
 2. **Code Quality:** Clean, maintainable implementation with comprehensive testing
-3. **Cross-Platform:** Consistent behavior across Unix and Windows systems
-4. **Developer Experience:** Clear error messages and intuitive debugging
+3. **Secure by Design:** Automatic escaping to prevent shell injection vulnerabilities
 
 ## Target Users
 
@@ -208,4 +206,4 @@
 
 ## Conclusion
 
-sh-cmd-tag represents a new standard for secure shell command execution in Node.js, combining the ergonomics developers want with the security guarantees production systems require. Through careful design and implementation, we deliver both power and safety in a single, intuitive API.
+sh-cmd-tag represents a new standard for secure shell command execution in Node.js, combining the ergonomics developers want with the security guarantees production systems require. Through careful design and implementation, it eliminates the common trade-off between usability and security.
