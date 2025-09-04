@@ -290,7 +290,7 @@ class ProcessResult {
 ## Testing Architecture
 
 ### Test Strategy
-- **127 Comprehensive Tests:** Cover all functionality with security focus
+- **Comprehensive Tests:** Cover all functionality with security focus
 - **TDD Approach:** Test-driven development for new features
 - **Security Testing:** Dedicated tests for injection prevention  
 - **Cross-Platform Testing:** Validate behavior on Unix and Windows

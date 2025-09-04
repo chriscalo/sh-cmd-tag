@@ -15,7 +15,7 @@ This epic replaces ~100 lines of manual stream handling and process management w
 ## Success Criteria
 
 - [x] Replace manual spawn/spawnSync with execa/execaSync
-- [x] All 127 existing tests pass unchanged (zero regressions)
+- [x] All existing tests pass unchanged (zero regressions)
 - [x] Reduced codebase complexity (~100 lines removed)  
 - [x] Improved error handling with execa's enhanced context
 - [x] Better cross-platform reliability
@@ -62,12 +62,12 @@ This epic replaces ~100 lines of manual stream handling and process management w
 **Phase 1:** Core execution replacement (executeAsyncCommand/executeSyncCommand)  
 **Phase 2:** Streaming integration with Process class  
 **Phase 3:** Template literal integration  
-**Phase 4:** Testing and validation (all 127 tests must pass)  
+**Phase 4:** Testing and validation (all tests must pass)  
 **Phase 5:** Performance optimization and cleanup
 
 ## Definition of Done
 
-- All 127 existing tests pass without modification
+- All existing tests pass without modification
 - Process class integrates with execa child processes
 - No performance regression (maintain <50ms streaming latency)
 - Security tests pass (no new vulnerabilities introduced)  

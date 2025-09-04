@@ -82,7 +82,7 @@
 ## Validation Tasks
 
 ### Regression Testing  
-- [ ] **Task 10:** `all 127 existing tests pass with execa backend`
+- [ ] **Task 10:** `all existing tests pass with execa backend`
   ```bash
   npm test  # All tests must pass unchanged
   ```
@@ -131,7 +131,7 @@
 ## Critical Success Criteria
 
 1. **Zero Breaking Changes:** All existing APIs work identically
-2. **Full Test Coverage:** 127 tests pass without modification
+2. **Full Test Coverage:** All tests pass without modification
 3. **Performance Parity:** No regression in streaming latency
 4. **Security Preservation:** All security features maintained  
 5. **Code Reduction:** Meaningful simplification achieved

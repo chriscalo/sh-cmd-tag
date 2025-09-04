@@ -355,7 +355,7 @@ All existing security tests must pass, including:
 ### Testing Strategy
 
 #### 1. Full Test Suite Compliance
-**Requirement**: All 127 existing tests must pass without modification
+**Requirement**: All existing tests must pass without modification
 
 **Test Categories:**
 - Core functionality (sh/cmd execution)
@@ -368,7 +368,7 @@ All existing security tests must pass, including:
 
 #### 2. Regression Prevention
 ```bash
-npm test  # Must pass all 127 tests
+npm test  # Must pass all tests
 npm run test:verbose  # Must show identical behavior
 ```
 
@@ -407,7 +407,7 @@ npm run test:verbose  # Must show identical behavior
 - [ ] Test deferred execution patterns
 
 #### Phase 5: Testing & Validation (1 day)
-- [ ] Run full test suite (existing 127 tests must pass)
+- [ ] Run full test suite (existing tests must pass)
 - [ ] Add tests for new API features
 - [ ] Fix any test failures
 - [ ] Performance validation
@@ -450,7 +450,7 @@ npm run test:verbose  # Must show identical behavior
 
 ### Success Criteria
 
-1. **Full test compatibility**: All 127 existing tests pass unchanged
+1. **Full test compatibility**: All existing tests pass unchanged
 2. **API preservation**: Zero breaking changes to existing public interface
 3. **New API functionality**: All new features work as designed:
    - `{ immediate: false }` option controls process execution timing
