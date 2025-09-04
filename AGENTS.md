@@ -11,7 +11,7 @@ Copilot, Claude) operating in this repository.
 ## 🎯 Agent Behavior Rules
 
 - Obey all style and testing rules defined in [STYLE.md](STYLE.md).
-- Always run `npm test` after making changes to ensure 127 tests still pass.
+- Always run `npm test` after making changes to ensure all tests still pass.
 - Prioritize security - this is a shell execution library with injection risks.
 
 ---

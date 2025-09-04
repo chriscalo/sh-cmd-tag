@@ -131,4 +131,4 @@ await sh`${trustedCommand}`; // No escaping applied
 npm test
 ```
 
-Runs 71 comprehensive tests covering all functionality.
+Runs comprehensive tests covering all functionality.

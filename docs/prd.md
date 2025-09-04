@@ -64,7 +64,7 @@
 - Complete backward compatibility guarantee
 
 **Success Metrics:**
-- All 127 existing tests continue to pass unchanged
+- All existing tests continue to pass unchanged
 - Advanced users can build sophisticated process orchestration
 - Zero performance regression from enhancements
 
@@ -103,7 +103,7 @@
 - **Edge Case Handling:** Robust behavior for unusual inputs and conditions
 
 ### Quality Requirements
-- **Test Coverage:** 127 comprehensive tests with security focus
+- **Test Coverage:** Comprehensive tests with security focus
 - **Documentation:** Complete API documentation with usage examples  
 - **Backward Compatibility:** Zero breaking changes during enhancements
 - **Code Quality:** Clean, maintainable implementation following best practices
@@ -121,7 +121,7 @@
 
 ### Version 1.0 (Core API)
 - [x] Template literal execution (sh/cmd) with security guarantees
-- [x] Comprehensive test suite (127 tests) with full coverage  
+- [x] Comprehensive test suite with full coverage  
 - [x] Cross-platform compatibility (Unix and Windows)
 - [x] Performance benchmarks meet <50ms streaming requirement
 

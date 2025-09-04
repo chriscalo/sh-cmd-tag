@@ -57,7 +57,7 @@ This epic introduces a Process class that encapsulates child process execution w
 ## Definition of Done
 
 - All acceptance criteria met for each user story
-- 127 existing tests continue to pass unchanged  
+- Existing tests continue to pass unchanged  
 - New Process class functionality fully tested
 - Performance parity with existing implementation
 - Documentation updated with advanced usage examples

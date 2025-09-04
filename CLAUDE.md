@@ -7,7 +7,7 @@ with code in this repository.
 
 **Testing:**
 ```bash
-npm test  # Runs all 127 tests with Node.js test runner
+npm test  # Runs all tests with Node.js test runner
 npm run test:verbose  # Runs tests with debug output
 ```
 
