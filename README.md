@@ -22,7 +22,7 @@ npm install sh-cmd-tag
 ## Quick Start
 
 ```javascript
-import { sh, cmd } from 'sh-cmd-tag';
+import { sh, cmd } from "sh-cmd-tag";
 
 // Basic usage
 const result = await sh`echo "Hello World"`;
@@ -33,11 +33,11 @@ const filename = "my file.txt";
 await sh`touch ${filename}`; // Automatically escaped as 'my file.txt'
 
 // Object interpolation
-const config = { host: 'localhost', port: 3000 };
+const config = { host: "localhost", port: 3000 };
 await sh`curl ${config}`; // Becomes: curl --host localhost --port 3000
 
 // Array interpolation  
-const files = ['file1.txt', 'file2.txt'];
+const files = ["file1.txt", "file2.txt"];
 await sh`rm ${files}`; // Becomes: rm file1.txt file2.txt
 
 // Streaming output
@@ -68,12 +68,12 @@ Interpolate complex data structures:
 
 ```javascript
 // Objects become --key value pairs
-const opts = { verbose: true, output: 'file.txt' };
+const opts = { verbose: true, output: "file.txt" };
 await sh`command ${opts}`;
 // Becomes: command --verbose --output file.txt
 
 // Arrays become space-separated values
-const files = ['a.txt', 'b.txt'];
+const files = ["a.txt", "b.txt"];
 await sh`rm ${files}`;
 // Becomes: rm a.txt b.txt
 ```
@@ -85,7 +85,7 @@ Real-time output processing:
 ```javascript
 // Stream chunks as they arrive
 for await (const chunk of sh.stream`long-running-command`) {
-  console.log('Received:', chunk);
+  console.log("Received:", chunk);
 }
 
 // Live output (inherit stdio)
@@ -119,9 +119,9 @@ await sh`echo ${userInput}`;
 Use `markSafeString()` only for trusted input:
 
 ```javascript
-import { markSafeString } from 'sh-cmd-tag';
+import { markSafeString } from "sh-cmd-tag";
 
-const trustedCommand = markSafeString('ls -la');
+const trustedCommand = markSafeString("ls -la");
 await sh`${trustedCommand}`; // No escaping applied
 ```
 
