@@ -15,10 +15,10 @@ interpolation, and flexible I/O control.
 
 ## Installation
 
-This package is published to GitHub Packages. Configure npm to use GitHub Packages registry for the `@chriscalo` scope:
+This package is published to GitHub Packages. Create an `.npmrc` file in your project root to configure the registry:
 
 ```bash
-npm config set @chriscalo:registry https://npm.pkg.github.com
+echo "@chriscalo:registry=https://npm.pkg.github.com" > .npmrc
 npm install @chriscalo/sh-cmd-tag
 ```
 
