@@ -29,13 +29,13 @@ import { sh, cmd } from "sh-cmd-tag";
 const result = await sh`echo "Hello World"`;
 ```
 
-The `result` variable contains a ProcessResult object with information about the command execution:
+The `result` variable contains a `ProcessResult` object with information about the command execution:
 
 ```javascript
 {
   ok: true,
-  output: "Hello World",
-  error: ""
+  output: "Hello World\n",
+  debug: ""
 }
 ```
 
@@ -48,7 +48,7 @@ await sh`touch ${filename}`;
 
 This automatically escapes the filename as `'my file.txt'`. The final command that gets executed is:
 
-```bash
+```sh
 touch 'my file.txt'
 ```
 
@@ -61,7 +61,7 @@ await sh`curl ${config}`;
 
 This becomes the following command:
 
-```bash
+```sh
 curl --host=localhost --port=3000
 ```
 
@@ -74,7 +74,7 @@ await sh`rm ${files}`;
 
 This becomes the following command:
 
-```bash
+```sh
 rm file1.txt file2.txt
 ```
 
@@ -94,7 +94,9 @@ for await (const chunk of sh.stream`npm install`) {
 const result = await sh`command ${arg}`;
 ```
 
-Returns ProcessResult with `.output`, `.ok`, `.error` properties
+```javascript
+ProcessResult // with .output, .ok, .debug properties
+```
 
 ### `cmd` - Async Command Execution without Shell Expansion
 
@@ -102,7 +104,15 @@ Returns ProcessResult with `.output`, `.ok`, `.error` properties
 const result = await cmd`command ${arg}`;
 ```
 
-Returns ProcessResult immediately
+Returns a `ProcessResult` object after the command completes:
+
+```javascript
+{
+  ok: true,
+  output: "command output\n",
+  debug: ""
+}
+```
 
 ### Object/Array Interpolation
 
@@ -115,7 +125,7 @@ await sh`command ${opts}`;
 
 Objects become --key value pairs. This becomes the following command:
 
-```bash
+```sh
 command --verbose --output=file.txt
 ```
 
@@ -126,7 +136,7 @@ await sh`rm ${files}`;
 
 Arrays become space-separated values. This becomes the following command:
 
-```bash
+```sh
 rm a.txt b.txt
 ```
 
@@ -146,11 +156,11 @@ Stream chunks as they arrive.
 await sh.live`interactive-command`;
 ```
 
-Live output (inherit stdio).
+Live output with direct console interaction.
 
 ### Error Handling
 
-You can choose whether commands throw exceptions on failure or return ProcessResult with `.ok === false`:
+You can choose whether commands throw exceptions on failure or return `ProcessResult` with `.ok === false`.
 
 Throwing behavior (default):
 
@@ -158,13 +168,20 @@ Throwing behavior (default):
 try {
   await sh`false`;
 } catch (error) {
-  console.log(error instanceof ProcessError);
-  console.log(error.code);
-  console.log(error.output);
+  console.error(error);
 }
 ```
 
-Command that fails. The error will be an instance of ProcessError with exit code and combined stdout/stderr output.
+The error will be an instance of `ProcessError`:
+
+```javascript
+ProcessError: Command failed with exit code 1
+{
+  code: 1,
+  output: "",
+  debug: ""
+}
+```
 
 Non-throwing behavior with `.safe`:
 
@@ -172,12 +189,20 @@ Non-throwing behavior with `.safe`:
 const result = await sh.safe`false`;
 ```
 
+The command that gets executed is:
+
+```sh
+false
+```
+
 The result variable contains information about the failed command execution:
 
 ```javascript
 {
   ok: false,
-  error: // Error details
+  output: "",
+  debug: "",
+  error: ProcessError // Error details
 }
 ```
 
@@ -192,7 +217,7 @@ await sh`cat ${userInput}`;
 
 This safely becomes the following command:
 
-```bash
+```sh
 cat 'file with spaces; echo gotcha'
 ```
 
