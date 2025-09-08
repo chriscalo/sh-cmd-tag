@@ -15,11 +15,11 @@ interpolation, and flexible I/O control.
 
 ## Installation
 
-This package is published to GitHub Packages, not npm. Create a `.npmrc` file in your project root:
+This package is published to GitHub Packages, not npm. Set your GitHub personal access token as an environment variable and configure the registry:
 
-```
-@chriscalo:registry=https://npm.pkg.github.com
-//npm.pkg.github.com/:_authToken=YOUR_GITHUB_PERSONAL_ACCESS_TOKEN
+```bash
+npm config set @chriscalo:registry https://npm.pkg.github.com
+npm config set //npm.pkg.github.com/:_authToken $GITHUB_TOKEN
 ```
 
 Then install the package:
