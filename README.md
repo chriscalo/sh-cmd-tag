@@ -94,8 +94,14 @@ for await (const chunk of sh.stream`npm install`) {
 const result = await sh`command ${arg}`;
 ```
 
+Returns a `ProcessResult` object after command completion:
+
 ```javascript
-ProcessResult // with .output, .ok, .debug properties
+{
+  ok: true,
+  output: "command result\n",
+  debug: "",
+}
 ```
 
 ### `cmd` - Async Command Execution without Shell Expansion
@@ -123,7 +129,7 @@ const opts = { verbose: true, output: "file.txt" };
 await sh`command ${opts}`;
 ```
 
-Objects become --key value pairs. This becomes the following command:
+Objects become --key=value pairs. This becomes the following command:
 
 ```sh
 command --verbose --output=file.txt
@@ -175,11 +181,12 @@ try {
 The error will be an instance of `ProcessError`:
 
 ```javascript
-ProcessError: Command failed with exit code 1
 {
+  name: "ProcessError",
+  message: "Command failed with exit code 1",
   code: 1,
   output: "",
-  debug: ""
+  debug: "",
 }
 ```
 
@@ -202,7 +209,13 @@ The result variable contains information about the failed command execution:
   ok: false,
   output: "",
   debug: "",
-  error: ProcessError // Error details
+  error: {
+    name: "ProcessError",
+    message: "Command failed with exit code 1",
+    code: 1,
+    output: "",
+    debug: "",
+  },
 }
 ```
 
@@ -230,7 +243,11 @@ const trustedCommand = markSafeString("ls -la");
 await sh`${trustedCommand}`;
 ```
 
-No escaping applied to marked safe strings.
+No escaping applied to marked safe strings. This becomes:
+
+```sh
+ls -la
+```
 
 ## Testing
 
