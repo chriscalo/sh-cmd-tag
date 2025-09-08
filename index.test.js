@@ -525,7 +525,7 @@ test("sh handles multiline commands", async () => {
   assert.deepEqual(actual, expected);
 });
 
-test("sh executes in caller\"s directory (__dirname)", async () => {
+test("sh executes in caller's directory (__dirname)", async () => {
   const actual = await sh`pwd`;
   const expected = new ProcessResult({
     ok: true,
@@ -595,7 +595,7 @@ test("cmd is safer with potentially malicious input", async () => {
   const actual = await cmd`echo "safe${maliciousInput}"`;
   const expected = new ProcessResult({
     ok: true,
-    // cmd doesn"t run in a shell
+    // cmd doesn't run in a shell
     output: "safe; echo HACKED\n",
     debug: "",
   });

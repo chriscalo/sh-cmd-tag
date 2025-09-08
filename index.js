@@ -634,7 +634,7 @@ function runCommand(command, useShell, isSync, options) {
 
 // Add chainable properties using getters
 function addChainableProps(fn, useShell, isSync, baseOptions = {}) {
-  // Safe mode - don"t throw on errors
+  // Safe mode - don't throw on errors
   Object.defineProperty(fn, "safe", {
     get() {
       const safeFn = (strings, ...values) => {
