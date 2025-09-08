@@ -28,11 +28,10 @@ Then create a `.npmrc` file in your project:
 //npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}
 ```
 
-Set the token environment variable and install:
+Then install the package:
 
 ```bash
-export GITHUB_TOKEN=$(gh auth token)
-npm install @chriscalo/sh-cmd-tag
+GITHUB_TOKEN=$(gh auth token) npm install @chriscalo/sh-cmd-tag
 ```
 
 For alternative installation methods, see the [GitHub Packages documentation](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-npm-registry).
