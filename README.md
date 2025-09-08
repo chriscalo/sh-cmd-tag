@@ -29,7 +29,7 @@ import { sh, cmd } from "sh-cmd-tag";
 const result = await sh`echo "Hello World"`;
 ```
 
-The `result` variable contains a `ProcessResult` object with information about the command execution:
+The `result` object is a `ProcessResult` with information about the command execution:
 
 ```javascript
 {
@@ -39,7 +39,7 @@ The `result` variable contains a `ProcessResult` object with information about t
 }
 ```
 
-### Safe interpolation of variables
+### Escaped interpolation of variables
 
 ```javascript
 const filename = "my file.txt";
@@ -55,11 +55,11 @@ touch 'my file.txt'
 ### Object interpolation for command flags
 
 ```javascript
-const config = { host: "localhost", port: 3000 };
+const config = { host: "localhost", port: 3000, quiet: false };
 await sh`curl ${config}`;
 ```
 
-This becomes the following command:
+This becomes the following command (note that falsy values like `false` are dropped):
 
 ```sh
 curl --host=localhost --port=3000
@@ -202,7 +202,7 @@ The command that gets executed is:
 false
 ```
 
-The result variable contains information about the failed command execution:
+The `result` variable contains information about the failed command execution:
 
 ```javascript
 {
