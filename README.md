@@ -15,16 +15,23 @@ interpolation, and flexible I/O control.
 
 ## Installation
 
-This package is published to GitHub Packages, not npm. Set your GitHub personal access token as an environment variable and configure the registry:
+This package is published to GitHub Packages, not npm. First authenticate with the GitHub CLI:
 
 ```bash
-npm config set @chriscalo:registry https://npm.pkg.github.com
-npm config set //npm.pkg.github.com/:_authToken $GITHUB_TOKEN
+gh auth login
 ```
 
-Then install the package:
+Then create a `.npmrc` file in your project:
+
+```
+@chriscalo:registry=https://npm.pkg.github.com
+//npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}
+```
+
+Set the token environment variable and install:
 
 ```bash
+export GITHUB_TOKEN=$(gh auth token)
 npm install @chriscalo/sh-cmd-tag
 ```
 
