@@ -29,7 +29,7 @@ import { sh, cmd } from "sh-cmd-tag";
 const result = await sh`echo "Hello World"`;
 ```
 
-The `result` object is a `ProcessResult` with information about the command execution:
+The resolved `result` object is a `ProcessResult` with information about the command execution:
 
 ```javascript
 {
@@ -94,7 +94,7 @@ for await (const chunk of sh.stream`npm install`) {
 const result = await sh`command ${arg}`;
 ```
 
-Returns a `ProcessResult` object after command completion:
+Resolves to a `ProcessResult` object after command completion:
 
 ```javascript
 {
@@ -110,7 +110,7 @@ Returns a `ProcessResult` object after command completion:
 const result = await cmd`command ${arg}`;
 ```
 
-Returns a `ProcessResult` object after the command completes:
+Resolves to a `ProcessResult` object after the command completes:
 
 ```javascript
 {
