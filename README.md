@@ -21,7 +21,7 @@ npm install sh-cmd-tag
 
 ## Quick Start
 
-Basic command execution:
+### Basic command execution
 
 ```javascript
 import { sh, cmd } from "sh-cmd-tag";
@@ -33,7 +33,7 @@ const result = await sh`echo "Hello World"`;
 "Hello World"
 ```
 
-Safe interpolation of variables:
+### Safe interpolation of variables
 
 ```javascript
 const filename = "my file.txt";
@@ -42,7 +42,7 @@ await sh`touch ${filename}`;
 
 This automatically escapes the filename as `'my file.txt'`.
 
-Object interpolation for command flags:
+### Object interpolation for command flags
 
 ```javascript
 const config = { host: "localhost", port: 3000 };
@@ -51,7 +51,7 @@ await sh`curl ${config}`;
 
 This becomes: `curl --host=localhost --port=3000`
 
-Array interpolation for multiple arguments:
+### Array interpolation for multiple arguments
 
 ```javascript
 const files = ["file1.txt", "file2.txt"];
@@ -60,7 +60,7 @@ await sh`rm ${files}`;
 
 This becomes: `rm file1.txt file2.txt`
 
-Streaming output:
+### Streaming output
 
 ```javascript
 for await (const chunk of sh.stream`npm install`) {
@@ -139,11 +139,11 @@ console.log(result.error); // Error details
 All interpolated values are automatically escaped to prevent shell injection:
 
 ```javascript
-const userInput = "file with spaces; rm -rf /";
+const userInput = "file with spaces; echo gotcha";
 await sh`cat ${userInput}`;
 ```
 
-This safely becomes: `cat 'file with spaces; rm -rf /'`
+This safely becomes: `cat 'file with spaces; echo gotcha'`
 
 Use `markSafeString()` only for trusted input:
 
