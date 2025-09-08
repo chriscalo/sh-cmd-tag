@@ -91,11 +91,11 @@ function createProxy(target, overrides) {
 
 function analyzeColors(output) {
   const colorMap = {
-    '\x1b[31m': 'RED',
-    '\x1b[32m': 'GREEN', 
-    '\x1b[33m': 'YELLOW',
-    '\x1b[34m': 'BLUE',
-    '\x1b[36m': 'CYAN'
+    "\x1b[31m": "RED",
+    "\x1b[32m": "GREEN", 
+    "\x1b[33m": "YELLOW",
+    "\x1b[34m": "BLUE",
+    "\x1b[36m": "CYAN"
   };
   
   const foundColors = [];

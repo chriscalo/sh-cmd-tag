@@ -1160,70 +1160,70 @@ test("sh rejects flag names with shell metacharacters", async () => {
   assert.throws(() => {
     sh`echo ${args}`;
   }, /Invalid flag name/, 
-    'Should reject shell metacharacters: "$(echo PWNED)"');
+    `Should reject shell metacharacters: "$(echo PWNED)"`);
 });
 
 test("sh rejects flag names with shell injection", async () => {
   const args = { "; echo HACKED": "value" };
   assert.throws(() => {
     sh`echo ${args}`;
-  }, /Invalid flag name/, 'Should reject shell injection: "; echo HACKED"');
+  }, /Invalid flag name/, `Should reject shell injection: "; echo HACKED"`);
 });
 
 test("sh rejects flag names with backticks", async () => {
   const args = { "`echo INJECTED`": "value" };
   assert.throws(() => {
     sh`echo ${args}`;
-  }, /Invalid flag name/, 'Should reject backticks: "`echo INJECTED`"');
+  }, /Invalid flag name/, `Should reject backticks: "\`echo INJECTED\`"`);
 });
 
 test("sh rejects flag names with path traversal", async () => {
   const args = { "../../etc/passwd": "value" };
   assert.throws(() => {
     sh`echo ${args}`;
-  }, /Invalid flag name/, 'Should reject path traversal: "../../etc/passwd"');
+  }, /Invalid flag name/, `Should reject path traversal: "../../etc/passwd"`);
 });
 
 test("sh rejects flag names with spaces", async () => {
   const args = { "foo bar": "value" };
   assert.throws(() => {
     sh`echo ${args}`;
-  }, /Invalid flag name/, 'Should reject spaces: "foo bar"');
+  }, /Invalid flag name/, `Should reject spaces: "foo bar"`);
 });
 
 test("sh rejects flag names starting with numbers", async () => {
   const args = { "123invalid": "value" };
   assert.throws(() => {
     sh`echo ${args}`;
-  }, /Invalid flag name/, 'Should reject starts with number: "123invalid"');
+  }, /Invalid flag name/, `Should reject starts with number: "123invalid"`);
 });
 
 test("sh rejects empty flag names", async () => {
   const args = { "": "value" };
   assert.throws(() => {
     sh`echo ${args}`;
-  }, /Invalid flag name/, 'Should reject empty: ""');
+  }, /Invalid flag name/, `Should reject empty: ""`);
 });
 
 test("sh rejects flag names with dots", async () => {
   const args = { "with.dots": "value" };
   assert.throws(() => {
     sh`echo ${args}`;
-  }, /Invalid flag name/, 'Should reject dots not allowed: "with.dots"');
+  }, /Invalid flag name/, `Should reject dots not allowed: "with.dots"`);
 });
 
 test("sh rejects flag names with double dots", async () => {
   const args = { "foo..bar": "value" };
   assert.throws(() => {
     sh`echo ${args}`;
-  }, /Invalid flag name/, 'Should reject double dots: "foo..bar"');
+  }, /Invalid flag name/, `Should reject double dots: "foo..bar"`);
 });
 
 test("sh rejects file-like flag names with extensions", async () => {
   const args = { "file.txt": "value" };
   assert.throws(() => {
     sh`echo ${args}`;
-  }, /Invalid flag name/, 'Should reject file-like with extension: "file.txt"');
+  }, /Invalid flag name/, `Should reject file-like with extension: "file.txt"`);
 });
 
 test("sh rejects pre-dashed flag names with shell metacharacters (short dash)", 
@@ -1231,7 +1231,7 @@ test("sh rejects pre-dashed flag names with shell metacharacters (short dash)",
   const args = { "-$(whoami)": "value" };
   assert.throws(() => {
     sh`echo ${args}`;
-  }, /Invalid flag name/, 'Should reject shell metacharacters with short dash');
+  }, /Invalid flag name/, "Should reject shell metacharacters with short dash");
 });
 
 test("sh rejects pre-dashed flag names with shell metacharacters (long dash)", 
@@ -1239,7 +1239,7 @@ test("sh rejects pre-dashed flag names with shell metacharacters (long dash)",
   const args = { "--$(echo test)": "value" };
   assert.throws(() => {
     sh`echo ${args}`;
-  }, /Invalid flag name/, 'Should reject shell metacharacters with long dash');
+  }, /Invalid flag name/, "Should reject shell metacharacters with long dash");
 });
 
 test("sh rejects pre-dashed flag names with shell metacharacters (triple dash)", 
@@ -1247,7 +1247,7 @@ test("sh rejects pre-dashed flag names with shell metacharacters (triple dash)",
   const args = { "---$(evil)": "value" };
   assert.throws(() => {
     sh`echo ${args}`;
-  }, /Invalid flag name/, 'Should reject shell metacharacters with triple dash');
+  }, /Invalid flag name/, "Should reject shell metacharacters with triple dash");
 });
 
 test("sh rejects pre-dashed flag names with shell injection (short dash)", 
@@ -1255,21 +1255,21 @@ test("sh rejects pre-dashed flag names with shell injection (short dash)",
   const args = { "-; echo hacked": "value" };
   assert.throws(() => {
     sh`echo ${args}`;
-  }, /Invalid flag name/, 'Should reject shell injection with short dash');
+  }, /Invalid flag name/, "Should reject shell injection with short dash");
 });
 
 test("sh rejects pre-dashed flag names with spaces (long dash)", async () => {
   const args = { "--foo bar": "value" };
   assert.throws(() => {
     sh`echo ${args}`;
-  }, /Invalid flag name/, 'Should reject spaces with long dash');
+  }, /Invalid flag name/, "Should reject spaces with long dash");
 });
 
 test("sh rejects pre-dashed flag names with spaces (quad dash)", async () => {
   const args = { "----foo bar": "value" };
   assert.throws(() => {
     sh`echo ${args}`;
-  }, /Invalid flag name/, 'Should reject spaces with quad dash');
+  }, /Invalid flag name/, "Should reject spaces with quad dash");
 });
 
 test("sh rejects pre-dashed flag names starting with numbers (short dash)", 
@@ -1278,7 +1278,7 @@ test("sh rejects pre-dashed flag names starting with numbers (short dash)",
   assert.throws(() => {
     sh`echo ${args}`;
   }, /Invalid flag name/, 
-    'Should reject starts with number with short dash');
+    "Should reject starts with number with short dash");
 });
 
 test("sh rejects pre-dashed flag names with dots (long dash)", async () => {
@@ -1286,42 +1286,42 @@ test("sh rejects pre-dashed flag names with dots (long dash)", async () => {
   assert.throws(() => {
     sh`echo ${args}`;
   }, /Invalid flag name/, 
-    'Should reject dots not allowed with long dash');
+    "Should reject dots not allowed with long dash");
 });
 
 test("sh rejects just a dash as flag name", async () => {
   const args = { "-": "value" };
   assert.throws(() => {
     sh`echo ${args}`;
-  }, /Invalid flag name/, 'Should reject just a dash');
+  }, /Invalid flag name/, "Should reject just a dash");
 });
 
 test("sh rejects just double dash as flag name", async () => {
   const args = { "--": "value" };
   assert.throws(() => {
     sh`echo ${args}`;
-  }, /Invalid flag name/, 'Should reject just double dash');
+  }, /Invalid flag name/, "Should reject just double dash");
 });
 
 test("sh rejects just triple dash as flag name", async () => {
   const args = { "---": "value" };
   assert.throws(() => {
     sh`echo ${args}`;
-  }, /Invalid flag name/, 'Should reject just triple dash');
+  }, /Invalid flag name/, "Should reject just triple dash");
 });
 
 test("sh rejects just quad dash as flag name", async () => {
   const args = { "----": "value" };
   assert.throws(() => {
     sh`echo ${args}`;
-  }, /Invalid flag name/, 'Should reject just quad dash');
+  }, /Invalid flag name/, "Should reject just quad dash");
 });
 
 test("sh rejects just many dashes as flag name", async () => {
   const args = { "------": "value" };
   assert.throws(() => {
     sh`echo ${args}`;
-  }, /Invalid flag name/, 'Should reject just many dashes');
+  }, /Invalid flag name/, "Should reject just many dashes");
 });
 
 test("sh supports multiple leading dashes for compatibility", async () => {
