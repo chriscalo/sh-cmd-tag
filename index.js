@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { Readable, Writable } from "node:stream";
 
 // Safe string infrastructure
-const SHELL_SAFE = Symbol('shellSafe');
+const SHELL_SAFE = Symbol("shellSafe");
 
 function markSafeString(str) {
   if (typeof str !== "string") {
@@ -92,7 +92,7 @@ function getCallerDirectory() {
     Error.prepareStackTrace = (_, stack) => stack;
     const stack = new Error().stack;
     
-    // Find the first stack frame that's not in process.js
+    // Find the first stack frame that"s not in process.js
     for (const frame of stack) {
       const filename = frame.getFileName();
       if (filename && !filename.endsWith("process.js") && 
@@ -101,7 +101,7 @@ function getCallerDirectory() {
       }
     }
     
-    // Fallback to process.cwd() if we can't detect the caller
+    // Fallback to process.cwd() if we can"t detect the caller
     return process.cwd();
   } catch {
     return process.cwd();
@@ -121,7 +121,7 @@ function parseCommand(command) {
   for (let i = 0; i < command.length; i++) {
     const char = command[i];
     
-    if (!inQuotes && (char === `"` || char === "'")) {
+    if (!inQuotes && (char === `"` || char === `'`)) {
       inQuotes = true;
       quoteChar = char;
     } else if (inQuotes && char === quoteChar) {
@@ -350,7 +350,7 @@ function formatShellSafeValue(value) {
   if (needsQuotes) {
     return shellEscape(valueStr); // Escape dangerous values with single quotes
   } else {
-    return valueStr; // Safe values don't need quotes
+    return valueStr; // Safe values don"t need quotes
   }
 }
 
@@ -379,7 +379,7 @@ function toFlagDescriptors(obj) {
 
 function formatValueForShell(value) {
   const valueStr = String(value);
-  const specialChars = /[ "\'$`\\\/]/;
+  const specialChars = /[ "'$`\\\/]/;
   const needsQuotes = typeof value === "string" && specialChars.test(valueStr);
   
   if (needsQuotes) {
@@ -468,28 +468,28 @@ function getInterpolationContext(beforeValue, afterValue) {
   const before = beforeValue.trim();
   const after = afterValue.trim();
   
-  // Check if we're inside double quotes
+  // Check if we"re inside double quotes
   const beforeDoubleQuotes = (before.match(/"/g) || []).length;
   const afterDoubleQuotes = (after.match(/"/g) || []).length;
   
-  // Check if we're inside single quotes  
+  // Check if we"re inside single quotes  
   const beforeSingleQuotes = (before.match(/'/g) || []).length;
   const afterSingleQuotes = (after.match(/'/g) || []).length;
   
-  // If odd number of double quotes before and after, we're inside double quotes
+  // If odd number of double quotes before and after, we"re inside double quotes
   if (beforeDoubleQuotes % 2 === 1 && afterDoubleQuotes % 2 === 1) {
-    return { type: 'double-quoted' };
+    return { type: "double-quoted" };
   }
   
-  // If odd number of single quotes before and after, we're inside single quotes
+  // If odd number of single quotes before and after, we"re inside single quotes
   if (beforeSingleQuotes % 2 === 1 && afterSingleQuotes % 2 === 1) {
-    return { type: 'single-quoted' };
+    return { type: "single-quoted" };
   }
   
-  return { type: 'unquoted' };
+  return { type: "unquoted" };
 }
 
-function valueToShellString(value, context = { type: 'unquoted' }) {
+function valueToShellString(value, context = { type: "unquoted" }) {
   if (value && typeof value === "object" && !Array.isArray(value)) {
     return objectToShellSafeFlags(value);
   } else if (Array.isArray(value)) {
@@ -504,23 +504,23 @@ function valueToShellString(value, context = { type: 'unquoted' }) {
   }
 }
 
-function templateEscape(str, context = { type: 'unquoted' }) {
+function templateEscape(str, context = { type: "unquoted" }) {
   if (str === "") {
     return "''";
   }
   
-  if (context.type === 'double-quoted') {
+  if (context.type === "double-quoted") {
     // Inside double quotes, we need to escape $, `, \, and "
-    // But we cannot use single quotes here - they'd be literal
+    // But we cannot use single quotes here - they"d be literal
     // Instead, escape the dangerous characters with backslashes
-    return str.replace(/[$`"\\]/g, '\\$&');
+    return str.replace(/[$`"\\]/g, "\\$&");
   }
   
-  if (context.type === 'single-quoted') {
+  if (context.type === "single-quoted") {
     // Inside single quotes, we need to handle single quotes specially
     // We CANNOT escape anything inside single quotes - they prevent ALL
     // interpretation. But if the value contains single quotes, we need to break
-    // out, escape, and re-enter. Pattern: 'before'\''after' where '\'' is an
+    // out, escape, and re-enter. Pattern: `before'\''after` where `'\''` is an
     // escaped single quote outside quotes
     return str.replaceAll("'", "'\\''");
   }
@@ -634,7 +634,7 @@ function runCommand(command, useShell, isSync, options) {
 
 // Add chainable properties using getters
 function addChainableProps(fn, useShell, isSync, baseOptions = {}) {
-  // Safe mode - don't throw on errors
+  // Safe mode - don"t throw on errors
   Object.defineProperty(fn, "safe", {
     get() {
       const safeFn = (strings, ...values) => {
