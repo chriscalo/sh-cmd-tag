@@ -21,12 +21,14 @@ npm install sh-cmd-tag
 
 ## Quick Start
 
-### Basic command execution
-
 ```javascript
 import { sh, cmd } from "sh-cmd-tag";
+```
 
-const result = await sh`echo "Hello World"`;
+### Direct command execution with `cmd`
+
+```javascript
+const result = await cmd`echo "Hello World"`;
 ```
 
 The resolved `result` object is a `ProcessResult` with information about the command execution:
@@ -35,6 +37,22 @@ The resolved `result` object is a `ProcessResult` with information about the com
 {
   ok: true,
   output: "Hello World\n",
+  debug: ""
+}
+```
+
+### Shell execution with `sh`
+
+```javascript
+const result = await sh`echo "hello world" | wc -w`;
+```
+
+This example uses shell pipes to count words. The resolved `result` object contains:
+
+```javascript
+{
+  ok: true,
+  output: "2\n",
   debug: ""
 }
 ```
@@ -52,6 +70,8 @@ This automatically escapes the filename as `'my file.txt'`. The final command th
 touch 'my file.txt'
 ```
 
+Note: `cmd` interpolation works similarly but without shell expansion.
+
 ### Object interpolation for command flags
 
 ```javascript
@@ -65,6 +85,8 @@ This becomes the following command (note that falsy values like `false` are drop
 curl --host=localhost --port=3000
 ```
 
+Note: `cmd` interpolation works the same way.
+
 ### Array interpolation for multiple arguments
 
 ```javascript
@@ -77,6 +99,8 @@ This becomes the following command:
 ```sh
 rm file1.txt file2.txt
 ```
+
+Note: `cmd` interpolation works the same way.
 
 ### Streaming output
 
@@ -172,7 +196,7 @@ Throwing behavior (default):
 
 ```javascript
 try {
-  await sh`false`;
+  await sh`ls /nonexistent/directory`;
 } catch (error) {
   console.error(error);
 }
@@ -193,13 +217,13 @@ The error will be an instance of `ProcessError`:
 Non-throwing behavior with `.safe`:
 
 ```javascript
-const result = await sh.safe`false`;
+const result = await sh.safe`ls /nonexistent/directory`;
 ```
 
 The command that gets executed is:
 
 ```sh
-false
+ls /nonexistent/directory
 ```
 
 The `result` variable contains information about the failed command execution:
