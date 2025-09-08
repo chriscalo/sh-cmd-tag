@@ -1,5 +1,5 @@
 {
-  "name": "sh-cmd-tag",
+  "name": "@chriscalo/sh-cmd-tag",
   "version": "1.0.0",
   "description": "Template tag functions for shell command execution with streaming output, safe interpolation, and flexible I/O control",
   "type": "module",
