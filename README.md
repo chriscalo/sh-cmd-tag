@@ -53,7 +53,7 @@ This example uses shell pipes to count words. The resolved `result` object conta
 {
   ok: true,
   output: "2\n",
-  debug: ""
+  debug: "",
 }
 ```
 
@@ -75,14 +75,14 @@ Note: `cmd` interpolation works similarly but without shell expansion.
 ### Object interpolation for command flags
 
 ```javascript
-const config = { host: "localhost", port: 3000, quiet: false };
+const config = { url: "http://localhost:3000/api", method: "GET", quiet: false };
 await sh`curl ${config}`;
 ```
 
 This becomes the following command (note that falsy values like `false` are dropped):
 
 ```sh
-curl --host=localhost --port=3000
+curl --url=http://localhost:3000/api --method=GET
 ```
 
 Note: `cmd` interpolation works the same way.
@@ -140,7 +140,7 @@ Resolves to a `ProcessResult` object after the command completes:
 {
   ok: true,
   output: "command output\n",
-  debug: ""
+  debug: "",
 }
 ```
 
@@ -153,7 +153,7 @@ const opts = { verbose: true, output: "file.txt" };
 await sh`command ${opts}`;
 ```
 
-Objects become --key=value pairs. This becomes the following command:
+Objects become `--key=value` pairs. This becomes the following command:
 
 ```sh
 command --verbose --output=file.txt
@@ -172,21 +172,20 @@ rm a.txt b.txt
 
 ### Streaming
 
-Real-time output processing:
+Real-time output processing using the `Process` class:
 
 ```javascript
-for await (const chunk of sh.stream`long-running-command`) {
-  console.log("Received:", chunk);
+import { Process } from "sh-cmd-tag";
+
+const process = new Process("npm run build");
+process.start();
+
+for await (const chunk of process.output) {
+  console.log("Build output:", chunk.toString());
 }
 ```
 
-Stream chunks as they arrive.
-
-```javascript
-await sh.live`interactive-command`;
-```
-
-Live output with direct console interaction.
+Stream chunks as they arrive during long-running operations.
 
 ### Error Handling
 
@@ -207,10 +206,10 @@ The error will be an instance of `ProcessError`:
 ```javascript
 {
   name: "ProcessError",
-  message: "Command failed with exit code 1",
-  code: 1,
+  message: "Command failed with exit code 2: /bin/sh: 1: ls: cannot access '/nonexistent/directory': No such file or directory",
+  code: 2,
   output: "",
-  debug: "",
+  debug: "/bin/sh: 1: ls: cannot access '/nonexistent/directory': No such file or directory\n",
 }
 ```
 
@@ -232,13 +231,13 @@ The `result` variable contains information about the failed command execution:
 {
   ok: false,
   output: "",
-  debug: "",
+  debug: "/bin/sh: 1: ls: cannot access '/nonexistent/directory': No such file or directory\n",
   error: {
     name: "ProcessError",
-    message: "Command failed with exit code 1",
+    message: "Command failed with exit code 1: /bin/sh: 1: ls: cannot access '/nonexistent/directory': No such file or directory",
     code: 1,
     output: "",
-    debug: "",
+    debug: "/bin/sh: 1: ls: cannot access '/nonexistent/directory': No such file or directory\n",
   },
 }
 ```
