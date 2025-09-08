@@ -7,9 +7,9 @@ interpolation, and flexible I/O control.
 
 - **Template literal syntax** for intuitive command construction
 - **Safe interpolation** with automatic shell escaping
-- **Object/array support** - interpolate complex data structures
+- **Object/array interpolation** - objects become command flags, arrays become arguments
 - **Streaming output** - real-time command output processing  
-- **Security-first** - prevents shell injection by default
+- **Automatic shell escaping** - prevents shell injection attacks
 - **Comprehensive error handling** with detailed ProcessError information
 - **Both sync and async** execution modes
 
@@ -21,26 +21,48 @@ npm install sh-cmd-tag
 
 ## Quick Start
 
+Basic command execution:
+
 ```javascript
 import { sh, cmd } from "sh-cmd-tag";
 
-// Basic usage
 const result = await sh`echo "Hello World"`;
-console.log(result.output); // "Hello World"
+```
 
-// Safe interpolation
+```
+"Hello World"
+```
+
+Safe interpolation of variables:
+
+```javascript
 const filename = "my file.txt";
-await sh`touch ${filename}`; // Automatically escaped as 'my file.txt'
+await sh`touch ${filename}`;
+```
 
-// Object interpolation
+This automatically escapes the filename as `'my file.txt'`.
+
+Object interpolation for command flags:
+
+```javascript
 const config = { host: "localhost", port: 3000 };
-await sh`curl ${config}`; // Becomes: curl --host localhost --port 3000
+await sh`curl ${config}`;
+```
 
-// Array interpolation  
+This becomes: `curl --host=localhost --port=3000`
+
+Array interpolation for multiple arguments:
+
+```javascript
 const files = ["file1.txt", "file2.txt"];
-await sh`rm ${files}`; // Becomes: rm file1.txt file2.txt
+await sh`rm ${files}`;
+```
 
-// Streaming output
+This becomes: `rm file1.txt file2.txt`
+
+Streaming output:
+
+```javascript
 for await (const chunk of sh.stream`npm install`) {
   process.stdout.write(chunk);
 }
@@ -58,19 +80,19 @@ const result = await sh`command ${arg}`;
 ### `cmd` - Async Command Execution without Shell Expansion
 
 ```javascript
-const result = cmd`command ${arg}`;
+const result = await cmd`command ${arg}`;
 // Returns ProcessResult immediately
 ```
 
 ### Object/Array Interpolation
 
-Interpolate complex data structures:
+Objects are converted to command line flags and arrays become space-separated arguments:
 
 ```javascript
 // Objects become --key value pairs
 const opts = { verbose: true, output: "file.txt" };
 await sh`command ${opts}`;
-// Becomes: command --verbose --output file.txt
+// Becomes: command --verbose --output=file.txt
 
 // Arrays become space-separated values
 const files = ["a.txt", "b.txt"];
@@ -94,9 +116,10 @@ await sh.live`interactive-command`;
 
 ### Error Handling
 
-Detailed error information:
+You can choose whether commands throw exceptions on failure or return ProcessResult with `.ok === false`:
 
 ```javascript
+// Throwing behavior (default)
 try {
   await sh`false`; // Command that fails
 } catch (error) {
@@ -104,17 +127,23 @@ try {
   console.log(error.code); // Exit code
   console.log(error.output); // Combined stdout/stderr
 }
+
+// Non-throwing behavior with .safe
+const result = await sh.safe`false`;
+console.log(result.ok); // false
+console.log(result.error); // Error details
 ```
 
-## Security
+## Shell Escaping
 
-All values are automatically escaped to prevent shell injection:
+All interpolated values are automatically escaped to prevent shell injection:
 
 ```javascript
-const userInput = "'; rm -rf /; echo '";
-await sh`echo ${userInput}`; 
-// Safe: echo ''\'''; rm -rf /; echo '\''';
+const userInput = "file with spaces; rm -rf /";
+await sh`cat ${userInput}`;
 ```
+
+This safely becomes: `cat 'file with spaces; rm -rf /'`
 
 Use `markSafeString()` only for trusted input:
 
