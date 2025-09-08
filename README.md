@@ -9,7 +9,7 @@ interpolation, and flexible I/O control.
 - **Safe interpolation** with automatic shell escaping
 - **Object/array interpolation** - objects become command flags, arrays become arguments
 - **Streaming output** - real-time command output processing  
-- **Automatic shell escaping** - prevents shell injection attacks
+- **Automatic shell escaping** - protects against shell injection attacks
 - **Comprehensive error handling** with detailed ProcessError information
 - **Both sync and async** execution modes
 
@@ -29,9 +29,7 @@ import { sh, cmd } from "sh-cmd-tag";
 const result = await sh`echo "Hello World"`;
 ```
 
-```
-"Hello World"
-```
+The output displays the text "Hello World".
 
 ### Safe interpolation of variables
 
@@ -92,12 +90,14 @@ Objects are converted to command line flags and arrays become space-separated ar
 // Objects become --key value pairs
 const opts = { verbose: true, output: "file.txt" };
 await sh`command ${opts}`;
-// Becomes: command --verbose --output=file.txt
+
+This becomes: `command --verbose --output=file.txt`
 
 // Arrays become space-separated values
 const files = ["a.txt", "b.txt"];
 await sh`rm ${files}`;
-// Becomes: rm a.txt b.txt
+
+This becomes: `rm a.txt b.txt`
 ```
 
 ### Streaming
@@ -136,7 +136,7 @@ console.log(result.error); // Error details
 
 ## Shell Escaping
 
-All interpolated values are automatically escaped to prevent shell injection:
+All interpolated values are automatically escaped to protect against shell injection:
 
 ```javascript
 const userInput = "file with spaces; echo gotcha";
