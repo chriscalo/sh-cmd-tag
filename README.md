@@ -15,14 +15,49 @@ interpolation, and flexible I/O control.
 
 ## Installation
 
+This package is published to GitHub Packages, not npm.
+
+### Prerequisites
+
+Before installing, you need to:
+
+1. **Configure npm** to use GitHub Packages for the `@chriscalo` scope:
+   ```bash
+   npm config set @chriscalo:registry https://npm.pkg.github.com
+   ```
+
+2. **Authenticate** with GitHub Packages using a personal access token with `read:packages` permission:
+   ```bash
+   npm login --scope=@chriscalo --registry=https://npm.pkg.github.com
+   ```
+
+### Installation
+
 ```bash
-npm install sh-cmd-tag
+npm install @chriscalo/sh-cmd-tag
 ```
+
+### Alternative: Using .npmrc
+
+Create a `.npmrc` file in your project root:
+```
+@chriscalo:registry=https://npm.pkg.github.com
+//npm.pkg.github.com/:_authToken=YOUR_GITHUB_PERSONAL_ACCESS_TOKEN
+```
+
+Then install with:
+```bash
+npm install @chriscalo/sh-cmd-tag
+```
+
+### More Information
+
+For detailed instructions on working with GitHub Packages, see the [GitHub Packages documentation](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-npm-registry).
 
 ## Quick Start
 
 ```javascript
-import { sh, cmd } from "sh-cmd-tag";
+import { sh, cmd } from "@chriscalo/sh-cmd-tag";
 
 // Basic usage
 const result = await sh`echo "Hello World"`;
@@ -119,7 +154,7 @@ await sh`echo ${userInput}`;
 Use `markSafeString()` only for trusted input:
 
 ```javascript
-import { markSafeString } from "sh-cmd-tag";
+import { markSafeString } from "@chriscalo/sh-cmd-tag";
 
 const trustedCommand = markSafeString("ls -la");
 await sh`${trustedCommand}`; // No escaping applied
