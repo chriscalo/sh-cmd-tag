@@ -15,26 +15,9 @@ interpolation, and flexible I/O control.
 
 ## Installation
 
-This package is published to GitHub Packages, not npm. First authenticate with the GitHub CLI:
-
 ```bash
-gh auth login
+npm install @chriscalo/sh-cmd-tag
 ```
-
-Then create a `.npmrc` file in your project:
-
-```
-@chriscalo:registry=https://npm.pkg.github.com
-//npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}
-```
-
-Then install the package:
-
-```bash
-GITHUB_TOKEN=$(gh auth token) npm install @chriscalo/sh-cmd-tag
-```
-
-For alternative installation methods, see the [GitHub Packages documentation](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-npm-registry).
 
 ## Quick Start
 
