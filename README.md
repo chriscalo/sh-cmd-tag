@@ -15,14 +15,22 @@ interpolation, and flexible I/O control.
 
 ## Installation
 
+This package is published to GitHub Packages. Create an `.npmrc` file in your project root to configure the registry:
+
+`.npmrc`:
+```
+@chriscalo:registry=https://npm.pkg.github.com
+```
+
+Then install the package:
 ```bash
-npm install sh-cmd-tag
+npm install @chriscalo/sh-cmd-tag
 ```
 
 ## Quick Start
 
 ```javascript
-import { sh, cmd } from "sh-cmd-tag";
+import { sh, cmd } from "@chriscalo/sh-cmd-tag";
 
 // Basic usage
 const result = await sh`echo "Hello World"`;
@@ -119,7 +127,7 @@ await sh`echo ${userInput}`;
 Use `markSafeString()` only for trusted input:
 
 ```javascript
-import { markSafeString } from "sh-cmd-tag";
+import { markSafeString } from "@chriscalo/sh-cmd-tag";
 
 const trustedCommand = markSafeString("ls -la");
 await sh`${trustedCommand}`; // No escaping applied
