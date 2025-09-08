@@ -17,8 +17,13 @@ interpolation, and flexible I/O control.
 
 This package is published to GitHub Packages. Create an `.npmrc` file in your project root to configure the registry:
 
+`.npmrc`:
+```
+@chriscalo:registry=https://npm.pkg.github.com
+```
+
+Then install the package:
 ```bash
-echo "@chriscalo:registry=https://npm.pkg.github.com" > .npmrc
 npm install @chriscalo/sh-cmd-tag
 ```
 
