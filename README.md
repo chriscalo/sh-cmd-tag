@@ -262,14 +262,14 @@ Use `markSafeString()` only for trusted input:
 ```javascript
 import { markSafeString } from "sh-cmd-tag";
 
-const trustedCommand = markSafeString("ls -la");
-await sh`${trustedCommand}`;
+const trustedFlags = markSafeString("-la --color=auto");
+await sh`ls ${trustedFlags} /home/user`;
 ```
 
 No escaping applied to marked safe strings. This becomes:
 
 ```sh
-ls -la
+ls -la --color=auto /home/user
 ```
 
 ## Testing
