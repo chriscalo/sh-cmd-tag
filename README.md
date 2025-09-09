@@ -262,8 +262,8 @@ Use `markSafeString()` only for trusted input:
 ```javascript
 import { markSafeString } from "sh-cmd-tag";
 
-const trustedFlags = markSafeString("-la --color=auto");
-await sh`ls ${trustedFlags} /home/user`;
+const safeArgs = markSafeString("-la --color=auto");
+await sh`ls ${safeArgs} /home/user`;
 ```
 
 No escaping applied to marked safe strings. This becomes:
