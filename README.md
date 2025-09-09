@@ -23,32 +23,97 @@ This package is published to GitHub Packages. Create an `.npmrc` file in your pr
 ```
 
 Then install the package:
-```bash
+
+```sh
 npm install @chriscalo/sh-cmd-tag
 ```
 
 ## Quick Start
 
 ```javascript
-import { sh, cmd } from "@chriscalo/sh-cmd-tag";
+import { sh, cmd } from "sh-cmd-tag";
+```
 
-// Basic usage
-const result = await sh`echo "Hello World"`;
-console.log(result.output); // "Hello World"
+### Direct command execution with `cmd`
 
-// Safe interpolation
+```javascript
+const result = await cmd`echo "Hello World"`;
+```
+
+The resolved `result` object is a `ProcessResult` with information about the command execution:
+
+```javascript
+{
+  ok: true,
+  output: "Hello World\n",
+  debug: ""
+}
+```
+
+### Shell execution with `sh`
+
+```javascript
+const result = await sh`echo "hello world" | wc -w`;
+```
+
+This example uses shell pipes to count words. The resolved `result` object contains:
+
+```javascript
+{
+  ok: true,
+  output: "2\n",
+  debug: "",
+}
+```
+
+### Escaped interpolation of variables
+
+```javascript
 const filename = "my file.txt";
-await sh`touch ${filename}`; // Automatically escaped as 'my file.txt'
+await sh`touch ${filename}`;
+```
 
-// Object interpolation
-const config = { host: "localhost", port: 3000 };
-await sh`curl ${config}`; // Becomes: curl --host localhost --port 3000
+This automatically escapes the filename as `'my file.txt'`. The final command that gets executed is:
 
-// Array interpolation  
+```sh
+touch 'my file.txt'
+```
+
+Note: `cmd` interpolation works similarly but without shell expansion.
+
+### Object interpolation for command flags
+
+```javascript
+const options = { regexp: "error", "ignore-case": true, quiet: false };
+await sh`grep app.log ${options}`;
+```
+
+This becomes the following command (note that falsy values like `false` are dropped):
+
+```sh
+grep app.log --regexp=error --ignore-case
+```
+
+Note: `cmd` interpolation works the same way.
+
+### Array interpolation for multiple arguments
+
+```javascript
 const files = ["file1.txt", "file2.txt"];
-await sh`rm ${files}`; // Becomes: rm file1.txt file2.txt
+await sh`rm ${files}`;
+```
 
-// Streaming output
+This becomes the following command:
+
+```sh
+rm file1.txt file2.txt
+```
+
+Note: `cmd` interpolation works the same way.
+
+### Streaming output
+
+```javascript
 for await (const chunk of sh.stream`npm install`) {
   process.stdout.write(chunk);
 }
@@ -60,83 +125,166 @@ for await (const chunk of sh.stream`npm install`) {
 
 ```javascript
 const result = await sh`command ${arg}`;
-// Returns ProcessResult with .output, .ok, .error properties
+```
+
+Resolves to a `ProcessResult` object after command completion:
+
+```javascript
+{
+  ok: true,
+  output: "command result\n",
+  debug: "",
+}
 ```
 
 ### `cmd` - Async Command Execution without Shell Expansion
 
 ```javascript
-const result = cmd`command ${arg}`;
-// Returns ProcessResult immediately
+const result = await cmd`command ${arg}`;
+```
+
+Resolves to a `ProcessResult` object after the command completes:
+
+```javascript
+{
+  ok: true,
+  output: "command output\n",
+  debug: "",
+}
 ```
 
 ### Object/Array Interpolation
 
-Interpolate complex data structures:
+Objects are converted to command line flags and arrays become space-separated arguments:
 
 ```javascript
-// Objects become --key value pairs
 const opts = { verbose: true, output: "file.txt" };
 await sh`command ${opts}`;
-// Becomes: command --verbose --output file.txt
+```
 
-// Arrays become space-separated values
+Objects become `--key=value` pairs. This becomes the following command:
+
+```sh
+command --verbose --output=file.txt
+```
+
+```javascript
 const files = ["a.txt", "b.txt"];
 await sh`rm ${files}`;
-// Becomes: rm a.txt b.txt
+```
+
+Arrays become space-separated values. This becomes the following command:
+
+```sh
+rm a.txt b.txt
 ```
 
 ### Streaming
 
-Real-time output processing:
+Real-time output processing using the `Process` class:
 
 ```javascript
-// Stream chunks as they arrive
-for await (const chunk of sh.stream`long-running-command`) {
-  console.log("Received:", chunk);
-}
+import { Process } from "sh-cmd-tag";
 
-// Live output (inherit stdio)
-await sh.live`interactive-command`;
+const process = new Process("npm run build");
+process.start();
+
+for await (const chunk of process.output) {
+  console.log("Build output:", chunk.toString());
+}
 ```
+
+Stream chunks as they arrive during long-running operations.
 
 ### Error Handling
 
-Detailed error information:
+You can choose whether commands throw exceptions on failure or return `ProcessResult` with `.ok === false`.
+
+Throwing behavior (default):
 
 ```javascript
 try {
-  await sh`false`; // Command that fails
+  await sh`ls /nonexistent/directory`;
 } catch (error) {
-  console.log(error instanceof ProcessError); // true
-  console.log(error.code); // Exit code
-  console.log(error.output); // Combined stdout/stderr
+  console.error(error);
 }
 ```
 
-## Security
-
-All values are automatically escaped to prevent shell injection:
+The error will be an instance of `ProcessError`:
 
 ```javascript
-const userInput = "'; rm -rf /; echo '";
-await sh`echo ${userInput}`; 
-// Safe: echo ''\'''; rm -rf /; echo '\''';
+{
+  name: "ProcessError",
+  message: "Command failed with exit code 2: /bin/sh: 1: ls: cannot access '/nonexistent/directory': No such file or directory",
+  code: 2,
+  output: "",
+  debug: "/bin/sh: 1: ls: cannot access '/nonexistent/directory': No such file or directory\n",
+}
+```
+
+Non-throwing behavior with `.safe`:
+
+```javascript
+const result = await sh.safe`ls /nonexistent/directory`;
+```
+
+The command that gets executed is:
+
+```sh
+ls /nonexistent/directory
+```
+
+The `result` variable contains information about the failed command execution:
+
+```javascript
+{
+  ok: false,
+  output: "",
+  debug: "/bin/sh: 1: ls: cannot access '/nonexistent/directory': No such file or directory\n",
+  error: {
+    name: "ProcessError",
+    message: "Command failed with exit code 1: /bin/sh: 1: ls: cannot access '/nonexistent/directory': No such file or directory",
+    code: 1,
+    output: "",
+    debug: "/bin/sh: 1: ls: cannot access '/nonexistent/directory': No such file or directory\n",
+  },
+}
+```
+
+## Shell Escaping
+
+All interpolated values are automatically escaped to protect against shell injection:
+
+```javascript
+const userInput = "file with spaces; echo gotcha";
+await sh`cat ${userInput}`;
+```
+
+This safely becomes the following command:
+
+```sh
+cat 'file with spaces; echo gotcha'
 ```
 
 Use `markSafeString()` only for trusted input:
 
 ```javascript
-import { markSafeString } from "@chriscalo/sh-cmd-tag";
+import { markSafeString } from "sh-cmd-tag";
 
-const trustedCommand = markSafeString("ls -la");
-await sh`${trustedCommand}`; // No escaping applied
+const safeArgs = markSafeString("-la --color=auto");
+await sh`ls ${safeArgs} /home/user`;
+```
+
+No escaping applied to marked safe strings. This becomes:
+
+```sh
+ls -la --color=auto /home/user
 ```
 
 ## Testing
 
-```bash
+To run tests:
+
+```sh
 npm test
 ```
-
-Runs comprehensive tests covering all functionality.
