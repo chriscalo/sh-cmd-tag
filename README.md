@@ -7,9 +7,9 @@ interpolation, and flexible I/O control.
 
 - **Template literal syntax** for intuitive command construction
 - **Safe interpolation** with automatic shell escaping
-- **Object/array support** - interpolate complex data structures
+- **Object/array interpolation** - objects become command flags, arrays become arguments
 - **Streaming output** - real-time command output processing  
-- **Security-first** - prevents shell injection by default
+- **Automatic shell escaping** - protects against shell injection attacks
 - **Comprehensive error handling** with detailed ProcessError information
 - **Both sync and async** execution modes
 
