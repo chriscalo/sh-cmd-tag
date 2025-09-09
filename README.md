@@ -75,14 +75,14 @@ Note: `cmd` interpolation works similarly but without shell expansion.
 ### Object interpolation for command flags
 
 ```javascript
-const config = { regexp: "error", file: "app.log", "ignore-case": true };
-await sh`grep ${config}`;
+const options = { regexp: "error", "ignore-case": true, quiet: false };
+await sh`grep app.log ${options}`;
 ```
 
 This becomes the following command (note that falsy values like `false` are dropped):
 
 ```sh
-grep --regexp=error --file=app.log --ignore-case
+grep app.log --regexp=error --ignore-case
 ```
 
 Note: `cmd` interpolation works the same way.
