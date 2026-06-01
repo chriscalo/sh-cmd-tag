@@ -192,8 +192,10 @@ test("sh.sync executes command synchronously", () => {
 });
 
 test("sh.sync throws error for non-existent command", () => {
-  // Same rationale as the async counterpart above: callback form guards against
-  // platform-specific "command not found" wording differences.
+  // Callback form instead of exact ProcessError match: the shell's "command not
+  // found" message differs across environments (Linux vs macOS), so we assert
+  // on the stable fields (name, code, output) and verify the command name
+  // appears somewhere in the message rather than pinning the exact wording.
   assert.throws(
     () => sh.sync`this-command-does-not-exist`,
     (err) => {
