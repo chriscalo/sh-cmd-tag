@@ -71,6 +71,10 @@ test("sh handles stderr output", async () => {
 });
 
 test("sh throws error for non-existent command", async () => {
+  // Callback form instead of exact ProcessError match: the shell's "command not
+  // found" message differs across environments (Linux vs macOS), so we assert
+  // on the stable fields (name, code, output) and verify the command name
+  // appears somewhere in the message rather than pinning the exact wording.
   await assert.rejects(
     async () => {
       await sh`nonexistent-cmd`;
@@ -140,6 +144,8 @@ test("cmd interpolates variables correctly", async () => {
 test("sh supports shell pipes", async () => {
   const result = await sh`echo "hello world" | wc -w`;
   const actual = result.output;
+  // Regex instead of exact string: `wc -w` output includes leading spaces on
+  // some platforms (e.g. macOS pads to a column width) but not others (Linux).
   const expected = /\s*2\n/;
   assert.match(actual, expected);
 });
@@ -186,6 +192,8 @@ test("sh.sync executes command synchronously", () => {
 });
 
 test("sh.sync throws error for non-existent command", () => {
+  // Same rationale as the async counterpart above: callback form guards against
+  // platform-specific "command not found" wording differences.
   assert.throws(
     () => sh.sync`this-command-does-not-exist`,
     (err) => {
