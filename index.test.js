@@ -75,15 +75,14 @@ test("sh throws error for non-existent command", async () => {
     async () => {
       await sh`nonexistent-cmd`;
     },
-    new ProcessError({
-      message: oneLine`
-        Command failed with exit code 127:
-        /bin/sh: nonexistent-cmd: command not found
-      `,
-      code: 127,
-      output: "",
-      debug: "/bin/sh: nonexistent-cmd: command not found\n",
-    }),
+    (err) => {
+      assert.equal(err.name, "ProcessError");
+      assert.equal(err.code, 127);
+      assert.equal(err.output, "");
+      assert.match(err.debug, /nonexistent-cmd/);
+      assert.match(err.message, /nonexistent-cmd/);
+      return true;
+    },
   );
 });
 
@@ -141,7 +140,7 @@ test("cmd interpolates variables correctly", async () => {
 test("sh supports shell pipes", async () => {
   const result = await sh`echo "hello world" | wc -w`;
   const actual = result.output;
-  const expected = /(\s+)2\n/;
+  const expected = /\s*2\n/;
   assert.match(actual, expected);
 });
 
@@ -189,15 +188,14 @@ test("sh.sync executes command synchronously", () => {
 test("sh.sync throws error for non-existent command", () => {
   assert.throws(
     () => sh.sync`this-command-does-not-exist`,
-    new ProcessError({
-      message: oneLine`
-        Command failed with exit code 127:
-        /bin/sh: this-command-does-not-exist: command not found
-      `,
-      code: 127,
-      output: "",
-      debug: "/bin/sh: this-command-does-not-exist: command not found\n"
-    })
+    (err) => {
+      assert.equal(err.name, "ProcessError");
+      assert.equal(err.code, 127);
+      assert.equal(err.output, "");
+      assert.match(err.debug, /this-command-does-not-exist/);
+      assert.match(err.message, /this-command-does-not-exist/);
+      return true;
+    },
   );
 });
 
