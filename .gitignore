@@ -138,3 +138,6 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 # BMAD (local only)
+
+# Git worktrees
+.worktrees/
