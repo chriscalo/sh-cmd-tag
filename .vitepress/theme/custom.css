@@ -1,0 +1,110 @@
+/* Custom styles for the sh-cmd-tag docs site */
+
+.breadcrumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4em;
+  margin-bottom: 0.75rem;
+  font-size: 0.85rem;
+  color: var(--vp-c-text-2);
+}
+
+.breadcrumbs a {
+  color: var(--vp-c-text-2);
+  font-weight: 500;
+  text-decoration: none;
+}
+
+.breadcrumbs a:hover {
+  color: var(--vp-c-brand-1);
+  text-decoration: underline;
+}
+
+.breadcrumbs-separator {
+  color: var(--vp-c-divider);
+  user-select: none;
+}
+
+.doc-action-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5em;
+  margin-bottom: 0.5rem;
+}
+
+.copy-buttons {
+  display: flex;
+  gap: 0.5em;
+}
+
+.inline-copy-btn {
+  display: inline-grid;
+  place-items: center;
+  background: var(--vp-c-bg-soft);
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 4px;
+  padding: 0.2em 0.5em;
+  font-size: 0.8rem;
+  color: var(--vp-c-text-1);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.inline-copy-btn [data-state] {
+  grid-column: 1 / -1;
+  grid-row: 1 / -1;
+  visibility: hidden;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3em;
+}
+
+.inline-copy-btn [data-state][aria-hidden="false"] {
+  visibility: visible;
+}
+
+.inline-copy-btn + .inline-copy-btn {
+  margin-left: 0;
+}
+
+.inline-copy-btn:hover {
+  background: var(--vp-c-bg-alt);
+  border-color: var(--vp-c-brand);
+}
+
+.inline-copy-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.inline-copy-btn.copied {
+  background: var(--vp-c-green-soft);
+  border-color: var(--vp-c-green-1);
+  color: var(--vp-c-green-1);
+}
+
+button {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.file-a-bug-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3em;
+}
+
+/*
+ * Local-search excerpts render inside `.vp-doc`, VitePress's full-article
+ * typography, so each excerpt paragraph inherits `p { margin: 16px 0 }` and
+ * pads every result by ~30px of dead space. `CustomSearchBox.vue` already owns
+ * the excerpt's size and clamp (its scoped `.excerpt` rules set `font-size`,
+ * `line-height`, and `max-height`), but its `:deep(*)` selector doesn't touch
+ * the paragraph margins, so strip those here to keep snippets compact
+ * (issue #579).
+ */
+.VPLocalSearchBox .excerpt .vp-doc p {
+  margin: 0;
+}
