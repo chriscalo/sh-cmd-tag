@@ -2237,7 +2237,9 @@ test("abandoning iteration early does not leave the child running",
     
     // The child keeps writing, so its liveness is observable from outside.
     // Asserting on proc.started would pass whether or not it was reaped.
-    const proc = sh`sh -c 'while true; do echo tick; echo tick >> ${marker}; sleep 0.05; done'`;
+    const loop = `while true; do echo tick; echo tick >> ${marker};` +
+      ` sleep 0.05; done`;
+    const proc = sh`sh -c ${loop}`;
     
     for await (const chunk of proc) {
       assert.ok(chunk);
@@ -2664,7 +2666,8 @@ test("a timeout is a failure even when the child exits cleanly", async () => {
   const script = `/tmp/sh-cmd-tag-coop-${process.pid}.js`;
   writeFileSync(
     script,
-    'process.on("SIGTERM", () => process.exit(0)); setInterval(() => {}, 1000);',
+    'process.on("SIGTERM", () => process.exit(0));' +
+    'setInterval(() => {}, 1000);',
   );
   
   try {

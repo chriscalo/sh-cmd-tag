@@ -1348,17 +1348,19 @@ class Pipeline {
     
     // Indexed by stage, so a failure can say which stage failed whether it
     // was a process or a stream.
-    const outcomes = await Promise.all(this.#stages.map(async (stage, index) => {
-      if (stage instanceof Process) {
-        try {
-          return { index, stage, result: await stage };
-        } catch (error) {
-          return { index, stage, error };
+    const outcomes = await Promise.all(
+      this.#stages.map(async (stage, index) => {
+        if (stage instanceof Process) {
+          try {
+            return { index, stage, result: await stage };
+          } catch (error) {
+            return { index, stage, error };
+          }
         }
-      }
-      const error = await this.#streamCompletions.get(stage);
-      return { index, stage, error: error ?? undefined };
-    }));
+        const error = await this.#streamCompletions.get(stage);
+        return { index, stage, error: error ?? undefined };
+      }),
+    );
     
     const failed = outcomes.find((outcome) => outcome.error);
     if (failed) {
