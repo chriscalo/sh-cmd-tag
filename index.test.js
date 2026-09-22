@@ -2994,15 +2994,22 @@ test("capture is bounded so a noisy process still settles", async () => {
 test("a caller can choose the shell", async () => {
   // The library picking bash is a default, not a restriction: a caller who
   // wants dash, zsh, or a shell at a particular path says so.
+  //
+  // /bin/sh is named rather than /bin/dash so this asserts on every POSIX
+  // host instead of skipping where dash is absent. A test that can skip
+  // itself into silence proves nothing about the hosts that skip it.
   const { sh } = await import("./index.js");
-  const { existsSync } = await import("node:fs");
-  if (!existsSync("/bin/dash")) return;
-  
+
   const actual = {
-    named: (await sh({ shell: "/bin/dash" })`echo $0`).output.trim(),
-    sync: sh.sync({ shell: "/bin/dash" })`echo $0`.output.trim(),
+    named: (await sh({ shell: "/bin/sh" })`echo $0`).output.trim(),
+    sync: sh.sync({ shell: "/bin/sh" })`echo $0`.output.trim(),
+    fallsBackToSelected: (await sh`echo $0`).output.trim(),
   };
-  const expected = { named: "/bin/dash", sync: "/bin/dash" };
+  const expected = {
+    named: "/bin/sh",
+    sync: "/bin/sh",
+    fallsBackToSelected: "/bin/bash",
+  };
   assert.deepEqual(actual, expected);
 });
 
@@ -3011,9 +3018,9 @@ test("the chosen shell is introspectable", async () => {
   
   const actual = new Process("true", {
     immediate: false,
-    shell: "/bin/dash",
+    shell: "/bin/sh",
   }).shell;
-  const expected = "/bin/dash";
+  const expected = "/bin/sh";
   assert.equal(actual, expected);
 });
 
