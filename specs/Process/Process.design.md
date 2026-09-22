@@ -298,78 +298,121 @@ lifecycle: `output: true` configures it, `proc.output` is it flowing, and
 - **`env`** — object. Variables, merged over `process.env`.
 - **`cwd`** — string. Working directory.
 
-Two keys are new, both belonging to the stop/timeout vocabulary:
+Three keys are new:
 
-- **`timeout`** — milliseconds. Stop the process after this long. No default,
+- **`timeout`** — duration. Stop the process after this long. No default,
   matching Node.
-- **`killAfter`** — milliseconds, default `5000`. How long a polite stop is
-  given before it escalates to an unrefusable kill. `false` disables
-  escalation entirely; `0` kills immediately with no grace.
+- **`gracePeriod`** — duration, default `5000`. How long a polite stop is
+  given before it escalates to an unrefusable kill. `0` kills immediately;
+  `Infinity` waits as long as the process needs.
+- **`signal`** — an `AbortSignal`. Aborting kills the process.
 
 ```javascript
-await sh({ timeout: 30_000 })`npm test`;      // deadline, then stop, then kill
-await proc.stop({ killAfter: 2_000 });        // less patient, this once
-await proc.stop({ killAfter: false });        // ask, then wait indefinitely
+await sh({ timeout: "30s" })`npm test`;
+await proc.stop({ gracePeriod: "2s" });
+await proc.stop({ gracePeriod: Infinity });   // wait it out
 ```
 
-### Designing these two keys
+### Durations
+
+Every duration accepts a number of milliseconds or a string with a unit.
+Numbers keep the library compatible with Node's own conventions and with any
+value a caller already computed; strings make the common literal readable.
+
+```javascript
+sh({ timeout: 30_000 })   // milliseconds, as Node expresses durations
+sh({ timeout: "30s" })    // identical, and easier to read at a glance
+```
+
+The string grammar is deliberately small: a number, optionally fractional,
+followed by one unit of `ms`, `s`, `m`, or `h`. `"0.5s"` is 500ms. Compound
+forms like `"1m30s"` are **not** accepted — allowing them means deciding about
+`"1h 2m 3s"`, whitespace, ordering, and repetition, and `90_000` or `"90s"`
+already says it. A unitless string such as `"30"` is a **`TypeError`**, not a
+silent guess: the whole point of the string form is that the unit is visible,
+so a string without one is a mistake worth catching at the call site rather
+than a value worth interpreting.
+
+Invalid durations throw when the configuration is built, not when the process
+runs, matching the library's existing habit of rejecting bad input at the
+boundary rather than carrying it inward.
+
+### Designing these keys
 
 The alternatives considered, and why these won.
 
-**Units: milliseconds, not duration strings.** `"30s"` reads better than
-`30_000` but needs a parser and a documented grammar — is `"1m30s"` legal? is
-`"30 seconds"`? — which is new surface and a new class of error for a
-readability gain that numeric separators mostly deliver anyway. Node uses
-milliseconds throughout, including `exec`'s own `timeout`. systemd accepts
-`"5s"`, but systemd is a config file format rather than a JS API. The unit is
-stated once here instead of being suffixed onto every key.
+**`gracePeriod` is the ops vocabulary, and there was no single convention to
+follow.** Two clusters exist. Kubernetes says `terminationGracePeriodSeconds`
+and Docker Compose says `stop_grace_period`; systemd says `TimeoutStopSec`,
+AWS ECS says `stopTimeout`, and PM2 says `kill_timeout`. The nearest JS
+precedent, execa, says `forceKillAfterDelay`. "Grace period" is the phrase
+most readers have already met, and it survives the unit suffix being dropped —
+`timeout` carries none, and one object should not mix two conventions.
 
-**Shape: flat, not nested.** `timeout: { after, killAfter }` groups the
-related keys, but the common case by a wide margin is "just give me a
-deadline", and nesting turns that into `timeout: { after: 30_000 }`. Tidying
-the rare case at the expense of the common one is the wrong trade.
+**Unbounded patience is a first-class case, not an escape hatch.** It is
+tempting to argue that processes needing a long, uninterrupted shutdown —
+a database flushing a buffer pool, an encoder finishing a file write, a worker
+draining a queue — belong to service managers rather than to a shell library.
+That is wrong, and it mistakes which process is which. This library's *host*
+may well be supervised by systemd; what it spawns is a different matter
+entirely. A Node service under systemd that runs `ffmpeg`, a worker pool, a
+local database, or a dev server is the supervisor of those children, and when
+its own `SIGTERM` arrives it has to shut them down properly. The graceful
+shutdown the host was given is exactly what it must pass on, and five seconds
+is frequently not enough. Supervising children is a core use of this library,
+not an edge of it.
 
-**Name: `killAfter`.** `graceMs` carries a unit suffix `timeout` does not, so
-one object would mix two conventions. `grace` alone is vague — grace for what,
-to do what? `gracePeriod` is accurate but names the waiting rather than the
-consequence. `forceAfter` is close, but introduces "force" as vocabulary used
-nowhere else. `killAfter` names both the action and its timing, and `kill()`
-is already the method it triggers — learning the config teaches the method.
+**`Infinity` expresses that, not `false`.** A duration field should hold
+a duration at every setting. `false` forces the reader to learn that this one
+key is sometimes a boolean, and it reads as "grace period: off", which is the
+opposite of what it means — no escalation is the *most* patient setting, not
+the least. `Infinity` is a legitimate value of the same type and says exactly
+what happens: wait without bound. `0` sits at the other end and means kill at
+once.
 
-**Disabling escalation matters.** A database flushing to disk should not be
-killed five seconds into a shutdown it is performing correctly. `killAfter:
-false` reads as "kill after: never" and does that; `killAfter: 0` reads as
-"kill after: no delay" and does that. Both fall out of the name rather than
-needing a separate flag.
+**The name `signal` is free, and means what Node means by it.** It would have
+been a trap beside a `signal(name)` method that delivered POSIX signals — but
+that method does not exist, because stopping is expressed as `stop()`,
+`kill()`, and `interrupt()`. With no competing meaning inside this API, the
+key can match Node's `spawn` option exactly, which is what a reader coming
+from `child_process` or `fetch` will expect.
 
-**One key, two scopes.** The same name works as an instance default in config
-and as a per-call override in `stop({ killAfter })`, so there is no second
-vocabulary for the same idea.
+An abort maps to `kill()`, not `stop()`: `abort` means *now* everywhere else
+in the platform, and a graceful-stop interpretation would make this library's
+`signal` behave differently from every other consumer of the same protocol.
 
-**The clock starts when the process starts**, not when it is constructed.
-With `immediate: false` a process can sit unstarted indefinitely, and a
-deadline measured from construction could expire before anything ran.
+The value of accepting one is composition rather than cancellation — `stop()`
+and `timeout` already cancel. It earns its place where a signal already exists
+in the surrounding code:
 
-**A timeout is reported with `timedOut: true` on `ProcessError`.** The
-alternatives were worse: `ProcessError.code` already holds the numeric exit
-code, so putting `"ETIMEDOUT"` there would overload one field with two types,
-and a `TimeoutError` subclass forces `instanceof` checks on callers who want a
-boolean. A flag alongside the existing fields costs nothing and reads
-directly.
+```javascript
+app.get("/render", async (req, res) => {
+  const signal = AbortSignal.any([req.signal, AbortSignal.timeout("30s")]);
+  const svg = await fetch(url, { signal });
+  const png = await sh({ signal })`convert - out.png`;
+  res.send(png.output);
+});
+```
 
-**`AbortSignal` is declined for now.** Node's `spawn` accepts `{ signal }`,
-and `AbortSignal.timeout(ms)` is the platform's own expression of this idea,
-so it is a real candidate. Two things rule it out here. The option name
-`signal` collides head-on with POSIX signals in a library about processes —
-precisely the vocabulary this design works to keep out of the caller's way.
-And `abort` means immediate termination, which contradicts the graceful-stop
-default rather than composing with it. If it is added later, it wants a name
-like `abortWith` that dodges the collision; recording that here means the
-collision is noticed rather than rediscovered.
+Without it, that handler hand-writes a bridge from the abort event to
+`proc.kill()`. With it, one signal governs the fetch and the process alike.
+
+**The clock starts when the process starts**, not when it is constructed. With
+`immediate: false` a process can sit unstarted indefinitely, and a deadline
+measured from construction could expire before anything ran.
+
+**A timeout is reported with `timedOut: true` on `ProcessError`.**
+`ProcessError.code` already holds the numeric exit code, so `"ETIMEDOUT"`
+there would overload one field with two types, and a `TimeoutError` subclass
+forces `instanceof` checks on callers who want a boolean.
+
+**Shape: flat, not nested.** `timeout: { after, gracePeriod }` groups the
+related keys, but "just give me a deadline" is the common case by a wide
+margin, and nesting turns it into `timeout: { after: "30s" }`.
 
 **An idle timeout is out of scope.** "No output for N seconds" is a genuine
-feature, common in CI runners, but it is a different one — it measures silence
-rather than duration — and nothing here needs it.
+feature, common in CI runners, but it measures silence rather than duration,
+and nothing here needs it.
 
 `sync` is not a `Process` option. Synchronous execution bypasses this class
 entirely — see below.
@@ -434,7 +477,7 @@ await sh({ timeout: 30_000 })`npm test`;
 
 The rejection is a `ProcessError` with `timedOut: true`, carrying whatever
 output was captured before the process was stopped — a timeout is a failure
-with evidence, not a blank one. `killAfter` defaults to 5000ms. There is no
+with evidence, not a blank one. `gracePeriod` defaults to 5000ms. There is no
 default timeout, matching Node.
 
 #### Timeouts in `.sync`
@@ -448,7 +491,7 @@ to send exactly one signal at the deadline.
 So `.sync` sends **`SIGKILL`** at the deadline rather than `SIGTERM`, because
 a child that ignored `SIGTERM` would otherwise blow through the deadline and
 hang the call — the worst outcome in the one mode where the caller cannot
-intervene. `killAfter` is meaningless synchronously and is ignored. The result
+intervene. `gracePeriod` is meaningless synchronously and is ignored. The result
 carries `timedOut: true` exactly as the asynchronous form does.
 
 The promise is therefore identical across modes — the deadline is enforced and
@@ -631,10 +674,10 @@ issue rather than in a checklist file.
 **Lifecycle control**
 
 55. `stop()` terminates politely and resolves once the process exits.
-56. `stop()` escalates to an unrefusable kill after `killAfter` if the
+56. `stop()` escalates to an unrefusable kill after `gracePeriod` if the
     process ignores the polite request.
-57. `stop({ killAfter })` overrides the escalation delay for one call.
-58. `killAfter: false` waits indefinitely; `killAfter: 0` kills at once.
+57. `stop({ gracePeriod })` overrides the escalation delay for one call.
+58. `gracePeriod: Infinity` waits without bound; `0` kills at once.
 59. `kill()` terminates immediately and unrefusably.
 60. `interrupt()` delivers the equivalent of Ctrl-C.
 61. Stopping an already-exited process is a no-op, not a throw.
