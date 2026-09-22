@@ -128,13 +128,22 @@ function isStream(obj) {
 
 // Synchronous execution
 function executeSyncCommand(cmd, args, spawnOptions, inputData, options) {
+  // Outside the try on purpose. A configuration error is not the command
+  // failing, and the catch below turns anything it sees into a
+  // ProcessError — which `throw: false` then hands back as a result, so
+  // `sh.sync.safe({ timeout: "30" })` reported a typo as a failed command
+  // and swallowed it. The asynchronous path throws these at the call site;
+  // this is the same promise kept the same way.
+  //
+  // A blocking call has no moment in which to wait politely and then
+  // escalate, so the deadline is enforced with an unrefusable kill: the
+  // promise is the same as the asynchronous form — the deadline holds and
+  // the failure is labelled — while the mechanism differs because the mode
+  // does. gracePeriod is meaningless here and is ignored.
+  const timeout = toMilliseconds(options.timeout, "timeout");
+  const limit = captureLimit(options.capture);
+
   try {
-    // A blocking call has no moment in which to wait politely and then
-    // escalate, so the deadline is enforced with an unrefusable kill. The
-    // promise is the same as the asynchronous form — the deadline holds and
-    // the failure is labelled — while the mechanism differs because the mode
-    // does. gracePeriod is meaningless here and is ignored.
-    const timeout = toMilliseconds(options.timeout, "timeout");
     const result = spawnSync(cmd, args, {
       ...spawnOptions,
       input: inputData,
@@ -149,9 +158,12 @@ function executeSyncCommand(cmd, args, spawnOptions, inputData, options) {
     // SIGKILL, and would otherwise be reported as having timed out.
     const timedOut = result.error?.code === "ETIMEDOUT";
     
-    const output = result.stdout || "";
-    const debug = result.stderr || "";
-    
+    const capturedOutput = limitCapture(result.stdout || "", limit);
+    const capturedDebug = limitCapture(result.stderr || "", limit);
+    const output = capturedOutput.text;
+    const debug = capturedDebug.text;
+    const truncated = capturedOutput.truncated || capturedDebug.truncated;
+
     if (result.error || timedOut) {
       const error = new ProcessError({
         message: timedOut
@@ -164,10 +176,14 @@ function executeSyncCommand(cmd, args, spawnOptions, inputData, options) {
       if (timedOut) {
         error.timedOut = true;
       }
+      if (truncated) {
+        error.truncated = true;
+      }
       if (options.throw !== false) {
         throw error;
       }
-      return new ProcessResult({ ok: false, error, output, debug });
+      return withTruncation(
+        new ProcessResult({ ok: false, error, output, debug }), truncated);
     }
     
     if (result.status !== 0) {
@@ -185,13 +201,19 @@ function executeSyncCommand(cmd, args, spawnOptions, inputData, options) {
         output,
         debug,
       });
+      if (truncated) {
+        error.truncated = true;
+      }
       if (options.throw !== false) {
         throw error;
       }
-      return new ProcessResult({ ok: false, error, output, debug });
+      return withTruncation(
+        new ProcessResult({ ok: false, error, output, debug }), truncated);
     }
     
-    return new ProcessResult({ ok: true, error: undefined, output, debug });
+    return withTruncation(
+      new ProcessResult({ ok: true, error: undefined, output, debug }),
+      truncated);
   } catch (error) {
     if (error instanceof ProcessError) {
       throw error;
@@ -209,6 +231,13 @@ function executeSyncCommand(cmd, args, spawnOptions, inputData, options) {
     return new ProcessResult({ ok: false, error: processError, output: "", 
                                debug: "" });
   }
+}
+
+function withTruncation(result, truncated) {
+  if (truncated) {
+    result.truncated = true;
+  }
+  return result;
 }
 
 // Asynchronous execution
@@ -725,10 +754,28 @@ function captureLimit(capture) {
   if (capture === false) {
     return 0;
   }
-  if (typeof capture === "number") {
-    return Math.max(0, Math.min(capture, MAX_CAPTURE_BYTES));
+  if (capture === true || capture === undefined || capture === null) {
+    return MAX_CAPTURE_BYTES;
   }
-  return MAX_CAPTURE_BYTES;
+  // Infinity spells "no limit", the same way it does for gracePeriod. The
+  // net still applies, because a string cannot hold more than that.
+  if (capture === Infinity) {
+    return MAX_CAPTURE_BYTES;
+  }
+  // Everything else has to be a byte count, and saying so beats quietly
+  // clamping: NaN and "64kb" fell through to an unbounded capture, while
+  // -1 clamped to zero — so a caller who asked for a limit got no limit,
+  // and a caller who mistyped one got nothing, both in silence.
+  if (!Number.isSafeInteger(capture) || capture < 0) {
+    const received = typeof capture === "string"
+      ? JSON.stringify(capture)
+      : String(capture);
+    throw new TypeError(
+      `capture must be true, false, or a non-negative whole number of ` +
+      `bytes — received ${received}`,
+    );
+  }
+  return Math.min(capture, MAX_CAPTURE_BYTES);
 }
 
 /**
@@ -736,6 +783,30 @@ function captureLimit(capture) {
  */
 function joinCapture(chunks) {
   return Buffer.concat(chunks).toString();
+}
+
+/**
+ * Applies a capture limit to text already in hand, keeping the tail.
+ *
+ * `spawnSync` buffers everything before it returns, so synchronously there
+ * is no streaming to opt out of and `capture` cannot save the memory the
+ * way it does asynchronously. It still decides what the result holds, which
+ * is what the option means — and honouring it here keeps one command from
+ * meaning two different things depending on how it was run.
+ */
+function limitCapture(text, limit) {
+  // Asking for nothing and getting nothing is not truncation, and the
+  // streaming path does not flag it either.
+  if (limit === 0) {
+    return { text: "", truncated: false };
+  }
+  const buffer = Buffer.from(text);
+  if (buffer.length <= limit) {
+    return { text, truncated: false };
+  }
+  // The oldest bytes go, matching the streaming path.
+  return { text: buffer.subarray(buffer.length - limit).toString(),
+           truncated: true };
 }
 
 const DURATION_PATTERN = /^(\d+(?:\.\d+)?)(ms|s|m|h)$/;

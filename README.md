@@ -365,6 +365,15 @@ result.truncated;  // true if anything was dropped
 When a limit is reached the **oldest** bytes go, because whatever made a
 command outproduce its own result is usually diagnosed from the end.
 
+A limit has to be a whole number of bytes. `Infinity` spells "no limit", the
+way it does for `gracePeriod`, and anything else — `NaN`, `-1`, `"64kb"` — is
+refused at the call site rather than quietly becoming something you did not
+ask for.
+
+`capture` means the same thing in `sync`, deciding what the result holds. It
+cannot save you the memory there, because a synchronous call buffers the whole
+output before it returns; for that, run the command asynchronously.
+
 And if what you want is a large output on disk, say that directly rather than
 routing it through a string:
 

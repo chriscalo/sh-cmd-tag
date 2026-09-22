@@ -51,8 +51,9 @@ whether the result holds it afterwards. Either can be yes or no
 independently, so watching a test suite scroll past and parsing its failures
 afterwards is one call. `capture: false` keeps nothing, which is what a
 command that never finishes needs; a number sets a byte limit, dropping the
-oldest bytes and setting `truncated`. Iteration, pipelines, and forwarding
-see every byte regardless.
+oldest bytes and setting `truncated`. `Infinity` spells "no limit", and
+anything that is not a whole number of bytes is refused at the call site.
+Iteration, pipelines, and forwarding see every byte regardless.
 
 **Shortcuts are bundles of settings, and your own configuration wins.**
 `sh.live({ output: false })` and `sh.safe({ throw: true })` mean what they

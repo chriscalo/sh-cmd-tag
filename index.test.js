@@ -16,10 +16,28 @@ import {
 const DEBUG = process.env.DEBUG?.includes("test");
 const __dirname = dirname(new URL(import.meta.url).pathname);
 
-test("sh is a function", () => {
-  const actual = typeof sh;
-  const expected = "function";
-  assert.equal(actual, expected);
+test("every tag and chainable on the public surface exists", () => {
+  // One map rather than a test each. These only say the surface is there;
+  // what each one does is asserted by the behaviour tests below, which is
+  // the check that would actually catch a break.
+  const surfaceOf = (tag) => ({
+    tag: typeof tag,
+    safe: typeof tag.safe,
+    live: typeof tag.live,
+    interactive: typeof tag.interactive,
+    sync: typeof tag.sync,
+    input: typeof tag.input,
+  });
+  const all = "function";
+  
+  const actual = { sh: surfaceOf(sh), cmd: surfaceOf(cmd) };
+  const expected = {
+    sh: { tag: all, safe: all, live: all, interactive: all, sync: all,
+          input: all },
+    cmd: { tag: all, safe: all, live: all, interactive: all, sync: all,
+           input: all },
+  };
+  assert.deepEqual(actual, expected);
 });
 
 test("sh`` returns Promise<ProcessResult>", async () => {
@@ -102,12 +120,6 @@ test("sh safely handles special characters in interpolation", async () => {
   assert.deepEqual(actual, expected);
 });
 
-test("cmd is a function", () => {
-  const actual = typeof cmd;
-  const expected = "function";
-  assert.equal(actual, expected);
-});
-
 test("cmd executes command directly and returns output", async () => {
   const actual = await cmd`echo "cmd test"`;
   const expected = new ProcessResult({
@@ -175,12 +187,6 @@ test("sh supports environment variables while cmd does not", async () => {
 });
 
 
-test("sh.sync is a function", () => {
-  const actual = typeof sh.sync;
-  const expected = "function";
-  assert.equal(actual, expected);
-});
-
 test("sh.sync executes command synchronously", () => {
   const actual = sh.sync`echo "sync test"`;
   const expected = new ProcessResult({
@@ -207,12 +213,6 @@ test("sh.sync throws error for non-existent command", () => {
       return true;
     },
   );
-});
-
-test("cmd.sync is a function", () => {
-  const actual = typeof cmd.sync;
-  const expected = "function";
-  assert.equal(actual, expected);
 });
 
 test("cmd.sync executes command synchronously and returns output", () => {
@@ -260,12 +260,6 @@ test("cmd.sync should accept string input via options", () => {
     debug: "",
   });
   assert.deepEqual(actual, expected);
-});
-
-test("sh.input is a function", () => {
-  const actual = typeof sh.input;
-  const expected = "function";
-  assert.equal(actual, expected);
 });
 
 test("sh.input() should provide input to the command", async () => {
@@ -354,12 +348,6 @@ test("cmd with debug: true should show and capture stderr", async () => {
   });
   
   assert.deepEqual(actual, expected);
-});
-
-test("sh.interactive is a function", () => {
-  const actual = typeof sh.interactive;
-  const expected = "function";
-  assert.equal(actual, expected);
 });
 
 test("sh.interactive should capture output while displaying it", async () => {
@@ -691,12 +679,6 @@ test("cmd should accept stream input", async () => {
   }
 });
 
-test("cmd.input is a function", () => {
-  const actual = typeof cmd.input;
-  const expected = "function";
-  assert.equal(actual, expected);
-});
-
 test("cmd.input() should provide input to the command", async () => {
   const result = await cmd.input("fluent cmd hello")`cat`;
   const actual = result.output;
@@ -708,12 +690,6 @@ test("cmd.sync.input() should chain and provide input", () => {
   const result = cmd.sync.input("fluent world")`cat`;
   const actual = result.output;
   const expected = "fluent world";
-  assert.equal(actual, expected);
-});
-
-test("cmd.interactive is a function", () => {
-  const actual = typeof cmd.interactive;
-  const expected = "function";
   assert.equal(actual, expected);
 });
 
@@ -744,12 +720,6 @@ test("cmd.interactive should capture output while displaying it", async () => {
   assert.deepEqual(result, expected);
 });
 
-test("sh.safe is a function", () => {
-  const actual = typeof sh.safe;
-  const expected = "function";
-  assert.equal(actual, expected);
-});
-
 test("sh.safe should not throw on non-zero exit", async () => {
   const result = await sh.safe`exit 1`;
   const expected = new ProcessResult({
@@ -764,12 +734,6 @@ test("sh.safe should not throw on non-zero exit", async () => {
     debug: "",
   });
   assert.deepEqual(result, expected);
-});
-
-test("cmd.safe is a function", () => {
-  const actual = typeof cmd.safe;
-  const expected = "function";
-  assert.equal(actual, expected);
 });
 
 test("cmd.safe should not throw on non-zero exit", async () => {
@@ -3442,3 +3406,135 @@ test("marking one value does not unmark the escaping around it", async () => {
   };
   assert.deepEqual(actual, expected);
 });
+
+// --- capture limits are validated, not guessed at ---------------------------
+
+test("a capture limit that is not a byte count is refused", () => {
+  // Clamping quietly meant the two ways of getting it wrong both failed
+  // silently and in opposite directions: NaN and "64kb" fell through to an
+  // unbounded capture, so a caller asking for a limit got none, while -1
+  // clamped to zero, so a caller mistyping one got nothing back at all.
+  const refused = [NaN, -1, 1.5, -Infinity, "64kb", "", {}, []];
+  
+  for (const capture of refused) {
+    assert.throws(
+      () => sh({ capture })`echo hi`,
+      /capture must be true, false, or a non-negative whole number/,
+      `capture: ${JSON.stringify(capture)} should have been refused`,
+    );
+  }
+});
+
+test("a capture limit is refused before the command runs", async () => {
+  // The point of refusing is to say so at the call site. A limit checked
+  // after the fact would have let the command run anyway.
+  const marker = `/tmp/sh-cmd-tag-capture-${process.pid}`;
+  
+  assert.throws(() => sh({ capture: NaN })`touch ${marker}`);
+  
+  const { existsSync } = await import("node:fs");
+  const actual = existsSync(marker);
+  const expected = false;
+  assert.equal(actual, expected, "the command ran despite a refused config");
+});
+
+test("the accepted capture spellings all mean what they say", async () => {
+  const actual = {
+    default: (await sh`printf abcdefghij`).output,
+    on: (await sh({ capture: true })`printf abcdefghij`).output,
+    off: (await sh({ capture: false })`printf abcdefghij`).output,
+    unbounded: (await sh({ capture: Infinity })`printf abcdefghij`).output,
+    limited: (await sh({ capture: 4 })`printf abcdefghij`).output,
+    zero: (await sh({ capture: 0 })`printf abcdefghij`).output,
+  };
+  const expected = {
+    default: "abcdefghij",
+    on: "abcdefghij",
+    off: "",
+    unbounded: "abcdefghij",
+    limited: "ghij",
+    zero: "",
+  };
+  assert.deepEqual(actual, expected);
+});
+
+test("turning capture off is not reported as truncation", async () => {
+  // truncated means bytes were dropped against the caller's wishes. Asking
+  // for none and getting none is the caller's wish.
+  const actual = {
+    off: (await sh({ capture: false })`printf abcdefghij`).truncated,
+    limited: (await sh({ capture: 4 })`printf abcdefghij`).truncated,
+    syncOff: sh.sync({ capture: false })`printf abcdefghij`.truncated,
+    syncLimited: sh.sync({ capture: 4 })`printf abcdefghij`.truncated,
+  };
+  const expected = {
+    off: undefined,
+    limited: true,
+    syncOff: undefined,
+    syncLimited: true,
+  };
+  assert.deepEqual(actual, expected);
+});
+
+test("capture means the same thing synchronously", async () => {
+  // spawnSync buffers everything before returning, so `capture` cannot save
+  // the memory here — but it still decides what the result holds, which is
+  // what the option means. Ignoring it made one command mean two different
+  // things depending on how it was run.
+  const actual = {
+    limited: sh.sync({ capture: 4 })`printf abcdefghij`.output,
+    off: sh.sync({ capture: false })`printf abcdefghij`.output,
+    full: sh.sync({ capture: true })`printf abcdefghij`.output,
+    failed: sh.sync.safe({ capture: 3 })`printf abcdefghij; exit 2`.output,
+    refused: (() => {
+      try { sh.sync({ capture: "64kb" })`echo hi`; return "did not throw"; }
+      catch (error) { return error.constructor.name; }
+    })(),
+  };
+  const expected = {
+    limited: "ghij",
+    off: "",
+    full: "abcdefghij",
+    failed: "hij",
+    refused: "TypeError",
+  };
+  assert.deepEqual(actual, expected);
+});
+
+test("a sync capture limit keeps the tail, like the streaming one", () => {
+  // Same rule both ways: whatever made a command outproduce its own result
+  // is diagnosed from the end.
+  const result = sh.sync({ capture: 5 })`printf 'startXXXXXXXXXXend!!'`;
+  
+  const actual = { output: result.output, truncated: result.truncated };
+  const expected = { output: "end!!", truncated: true };
+  assert.deepEqual(actual, expected);
+});
+
+test("a configuration error is not a command failure, synchronously too",
+  async () => {
+    // The sync path validated inside its own try, and the catch turned
+    // anything it saw into a ProcessError — which `throw: false` then
+    // handed back as a result. A typo was reported as the command failing
+    // and `safe` swallowed it whole. The async path always threw these at
+    // the call site; both do now.
+    const attempts = [
+      () => sh.sync({ timeout: "30" })`echo hi`,
+      () => sh.sync.safe({ timeout: "30" })`echo hi`,
+      () => sh.sync.safe({ capture: NaN })`echo hi`,
+      () => cmd.sync.safe({ capture: -1 })`echo hi`,
+    ];
+    
+    for (const attempt of attempts) {
+      assert.throws(attempt, (error) => {
+        assert.equal(error.constructor.name, "TypeError");
+        assert.notEqual(error.name, "ProcessError");
+        return true;
+      });
+    }
+    
+    // ...while a real failure is still a result, not a throw.
+    const actual = sh.sync.safe`exit 3`.ok;
+    const expected = false;
+    assert.equal(actual, expected);
+  });
