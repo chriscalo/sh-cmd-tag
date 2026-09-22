@@ -31,6 +31,7 @@
 import { spawn } from "node:child_process";
 import { watch, utimesSync, existsSync } from "node:fs";
 import process from "node:process";
+import { pathToFileURL } from "node:url";
 
 /** Path to VitePress config file — touched to trigger hot reload */
 const CONFIG_PATH = ".vitepress/config.js";
@@ -103,7 +104,10 @@ function startDevServer() {
 }
 
 // Only run the server when executed directly, so tests can import the helpers.
-if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
+const invokedDirectly =
+  process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (invokedDirectly) {
   const { child, watchers } = startDevServer();
 
   /**
