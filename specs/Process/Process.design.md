@@ -630,7 +630,10 @@ defensible and remains available later; it is not the default because "unset
 means we do not interfere" is easier to reason about than a rule that reads
 the parent's environment behind the caller's back.
 
-**Exactly one variable is ever set, never both.** Precedence between them is
+**The library never sets both**, because whichever `color` asks for clears
+the other. The guarantee is about what this code sets: left unset it adds and
+removes nothing, so the child inherits an environment that may hold neither
+or both, which is the caller's to arrange. Precedence between them is
 implementation-dependent: no-color.org recommends `NO_COLOR` win, but Node 24
 does the opposite — `FORCE_COLOR=1 NO_COLOR=1 node --test` still emits colour.
 Setting both would make the library's behaviour depend on which tool the

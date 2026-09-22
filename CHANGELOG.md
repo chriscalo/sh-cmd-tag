@@ -35,8 +35,9 @@ accepts an `AbortSignal`.
 `"500ms"`, `"30s"`, `"5m"`, `"1.5h"`. A string without a unit is an error.
 
 **Colour.** `color: true` sets `FORCE_COLOR` in the child and `color: false`
-sets `NO_COLOR`; unset leaves the child's environment alone. Exactly one is
-ever set.
+sets `NO_COLOR` — never both, since whichever is asked for clears the other.
+Unset, the library adds and removes nothing, so the child inherits whatever
+the environment already holds, which may be neither variable or both.
 
 **Environment.** Commands run in the caller's working directory unless `cwd`
 says otherwise. Left to itself the library picks a shell — `bash` where

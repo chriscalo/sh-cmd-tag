@@ -316,8 +316,12 @@ await sh.input("hello")`wc -w`;
 Tools decide whether to emit colour by checking whether their output is a
 terminal, and forwarding hands them a pipe — so live output is not coloured
 by default. `color: true` sets `FORCE_COLOR` in the child; `color: false` sets
-`NO_COLOR`. Exactly one is ever set, never both, because precedence between
-them varies between tools.
+`NO_COLOR`. Whichever you ask for clears the other, so the library never sets
+both — precedence between them varies between tools.
+
+Left unset, the library adds and removes nothing: the child inherits your
+environment, which may hold neither variable or both. That is your
+environment's business, not something this library rewrites behind you.
 
 ```javascript
 await sh.live({ color: true })`npm test`;
