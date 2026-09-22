@@ -2741,3 +2741,16 @@ test("a shell pipeline whose reader exits early still succeeds", async () => {
   const expected = "y\ny\n";
   assert.equal(actual, expected);
 });
+
+test("an input stream error closes the child's stdin", async () => {
+  // Destroying only the source leaves child.stdin open, so a command
+  // waiting for EOF runs forever and the process never settles.
+  const { sh } = await import("./index.js");
+  const proc = sh.safe`cat`;
+  
+  setTimeout(() => proc.input.destroy(new Error("boom")), 50);
+  
+  const result = await proc;
+  
+  assert.ok(result !== undefined);
+});

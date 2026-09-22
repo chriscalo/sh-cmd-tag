@@ -969,7 +969,11 @@ class Process {
           if (error.code === "EPIPE" || error.code === "ERR_STREAM_DESTROYED") {
             return;
           }
+          // Closing only the source leaves the child's stdin open, and a
+          // command waiting for EOF — `cat` with nothing more coming —
+          // would wait forever, so the process would never settle.
           this.#io.input.destroy();
+          child.stdin.destroy();
         });
       }
       this.#io.input.pipe(child.stdin);
