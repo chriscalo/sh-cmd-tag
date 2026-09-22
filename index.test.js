@@ -3460,3 +3460,39 @@ test("a configuration error is not a command failure, synchronously too",
     };
     assert.deepEqual(actual, expected);
   });
+
+test("a synchronous command is not cut off at one megabyte", async () => {
+  // spawnSync defaults to a 1MB buffer and kills the child with ENOBUFS on
+  // the byte after it, so any synchronous command producing more than that
+  // failed — whatever `capture` said, including the plain default. Measured
+  // before, against 2MB of output: every form returned ok: false with
+  // ENOBUFS, and the requested 64KB tail was never reached because the
+  // bytes it would have kept had been thrown away already.
+  const { writeFileSync, unlinkSync } = await import("node:fs");
+  const script = `/tmp/sh-cmd-tag-syncbig-${process.pid}.js`;
+  const size = 2 * 1024 * 1024;
+  writeFileSync(script, `process.stdout.write("x".repeat(${size}));`);
+  
+  try {
+    const full = sh.sync.safe`node ${script}`;
+    const tail = sh.sync.safe({ capture: 64 * 1024 })`node ${script}`;
+    
+    const actual = {
+      fullOk: full.ok,
+      fullBytes: full.output.length,
+      tailOk: tail.ok,
+      tailBytes: tail.output.length,
+      tailTruncated: tail.truncated,
+    };
+    const expected = {
+      fullOk: true,
+      fullBytes: size,
+      tailOk: true,
+      tailBytes: 64 * 1024,
+      tailTruncated: true,
+    };
+    assert.deepEqual(actual, expected);
+  } finally {
+    try { unlinkSync(script); } catch {}
+  }
+});

@@ -148,6 +148,13 @@ function executeSyncCommand(cmd, args, spawnOptions, inputData, options) {
       ...spawnOptions,
       input: inputData,
       encoding: "utf8",
+      // spawnSync defaults to a 1MB buffer and kills the child with ENOBUFS
+      // on the byte after it, so `sh.sync`cat big.txt`` failed on any output
+      // past a megabyte — whatever `capture` said, including the default.
+      // The ceiling is what a string can hold, which is the same net the
+      // asynchronous path uses; `capture` then decides what the result
+      // keeps, and can only be honoured if the bytes arrived at all.
+      maxBuffer: MAX_CAPTURE_BYTES,
       ...(timeout !== undefined && timeout !== Infinity
         ? { timeout, killSignal: "SIGKILL" }
         : {}),
