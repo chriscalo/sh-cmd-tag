@@ -2215,16 +2215,32 @@ test("awaiting after iterating still gives a complete result", async () => {
 test("abandoning iteration early does not leave the child running",
   async () => {
     const { sh } = await import("./index.js");
-    const proc = sh`sh -c 'while true; do echo tick; sleep 0.05; done'`;
+    const { readFileSync, existsSync, unlinkSync } = await import("node:fs");
+    const marker = `/tmp/sh-cmd-tag-reap-${process.pid}-${Date.now()}.txt`;
+    try { unlinkSync(marker); } catch {}
+    
+    // The child keeps writing, so its liveness is observable from outside.
+    // Asserting on proc.started would pass whether or not it was reaped.
+    const proc = sh`sh -c 'while true; do echo tick; echo tick >> ${marker}; sleep 0.05; done'`;
     
     for await (const chunk of proc) {
       assert.ok(chunk);
       break;
     }
     
-    const actual = proc.started;
-    const expected = true;
-    assert.equal(actual, expected);
+    const sizeAtBreak = existsSync(marker)
+      ? readFileSync(marker, "utf-8").length
+      : 0;
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    const sizeLater = existsSync(marker)
+      ? readFileSync(marker, "utf-8").length
+      : 0;
+    
+    try { unlinkSync(marker); } catch {}
+    
+    const actual = sizeLater;
+    const expected = sizeAtBreak;
+    assert.equal(actual, expected, "child kept writing after the loop broke");
   });
 
 // --- pipelines -------------------------------------------------------------
@@ -2313,6 +2329,22 @@ test("a stream stage can be followed by a command stage", async () => {
     .output.trim();
   const expected = "mixed";
   assert.equal(actual, expected);
+});
+
+test("a transform stage feeds a command stage", async () => {
+  const { sh } = await import("./index.js");
+  const { createGzip } = await import("node:zlib");
+  
+  // Compressed bytes reach wc, so the transform really is in the path
+  // rather than the source being forked past it.
+  const compressed = Number(
+    (await sh`printf "hello hello hello"`.pipe(createGzip()).pipe`wc -c`)
+      .output.trim(),
+  );
+  const raw = "hello hello hello".length;
+  
+  assert.ok(compressed > 0);
+  assert.notEqual(compressed, raw);
 });
 
 test("iterating a chain yields the last stage's output", async () => {

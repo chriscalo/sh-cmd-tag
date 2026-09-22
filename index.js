@@ -1136,13 +1136,17 @@ class Process {
    * alone if the group is already gone.
    */
   #signalTree(signal) {
+    // Both, not one or the other. Signalling the group is what reaches the
+    // whole tree, but there is a window just after spawn where the child has
+    // not yet become a group leader, and -pid fails with ESRCH. Treating
+    // that as "fall back to the child alone" silently kills only the outer
+    // shell and leaves everything it started running.
     try {
       process.kill(-this.#childProcess.pid, signal);
-    } catch {
-      try {
-        this.#childProcess.kill(signal);
-      } catch {}
-    }
+    } catch {}
+    try {
+      this.#childProcess.kill(signal);
+    } catch {}
   }
   
   /**
