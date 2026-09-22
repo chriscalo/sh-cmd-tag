@@ -543,7 +543,7 @@ function addChainableProps(fn, useShell, isSync, baseOptions = {}) {
       const safeFn = (strings, ...values) => {
         const mergedOptions = { ...baseOptions, throw: false };
         if (typeof strings === "object" && !Array.isArray(strings)) {
-          const options = { ...strings, ...mergedOptions };
+          const options = { ...mergedOptions, ...strings };
           return function(templateStrings, ...templateValues) {
             return executeCommand(
               templateStrings,
@@ -571,7 +571,7 @@ function addChainableProps(fn, useShell, isSync, baseOptions = {}) {
       const liveOptions = { ...baseOptions, output: true, debug: true };
       const liveFn = (strings, ...values) => {
         if (typeof strings === "object" && !Array.isArray(strings)) {
-          const options = { ...strings, ...liveOptions };
+          const options = { ...liveOptions, ...strings };
           return function(templateStrings, ...templateValues) {
             return executeCommand(
               templateStrings,
@@ -601,7 +601,7 @@ function addChainableProps(fn, useShell, isSync, baseOptions = {}) {
           debug: true,
         };
         if (typeof strings === "object" && !Array.isArray(strings)) {
-          const options = { ...strings, ...mergedOptions };
+          const options = { ...mergedOptions, ...strings };
           return function(templateStrings, ...templateValues) {
             return executeCommand(
               templateStrings,
@@ -631,7 +631,7 @@ function addChainableProps(fn, useShell, isSync, baseOptions = {}) {
     const inputFn = (strings, ...values) => {
       const mergedOptions = { ...baseOptions, input: inputData };
       if (typeof strings === "object" && !Array.isArray(strings)) {
-        const options = { ...strings, ...mergedOptions };
+        const options = { ...mergedOptions, ...strings };
         return function(templateStrings, ...templateValues) {
           return executeCommand(
             templateStrings,
@@ -703,19 +703,29 @@ function resolveShell(shell) {
   return SELECTED_SHELL;
 }
 
-// A JS string cannot exceed this, so neither can captured output. Beyond it
-// the process would settle by throwing ERR_STRING_TOO_LONG from inside its
-// own completion handler, which means never settling at all.
+// A JS string cannot exceed this, so neither can captured output. It is a
+// safety net, not a policy: a caller running something endless turns capture
+// off rather than relying on the net to catch them.
 const MAX_CAPTURE_BYTES = 0x1fffffe8;
 
 /**
- * Joins captured chunks, keeping what a string can hold.
+ * Resolves the `capture` option to a limit in bytes.
+ */
+function captureLimit(capture) {
+  if (capture === false) {
+    return 0;
+  }
+  if (typeof capture === "number") {
+    return Math.max(0, Math.min(capture, MAX_CAPTURE_BYTES));
+  }
+  return MAX_CAPTURE_BYTES;
+}
+
+/**
+ * Joins captured chunks into the string a result carries.
  */
 function joinCapture(chunks) {
-  const whole = Buffer.concat(chunks);
-  return whole.length > MAX_CAPTURE_BYTES
-    ? whole.subarray(0, MAX_CAPTURE_BYTES).toString()
-    : whole.toString();
+  return Buffer.concat(chunks).toString();
 }
 
 const DURATION_PATTERN = /^(\d+(?:\.\d+)?)(ms|s|m|h)$/;
@@ -821,6 +831,7 @@ class Process {
   #outputChunks = [];
   #debugChunks = [];
   #captured = { output: 0, debug: 0 };
+  #captureLimit = MAX_CAPTURE_BYTES;
   #truncated = false;
   #inheritedStdin = false;
   #abortListener;
@@ -842,6 +853,7 @@ class Process {
     toMilliseconds(this.#config.gracePeriod, "gracePeriod");
     
     this.#shell = resolveShell(this.#config.shell);
+    this.#captureLimit = captureLimit(this.#config.capture);
     
     const { promise, resolve, reject } = Promise.withResolvers();
     this.#promise = promise;
@@ -1105,17 +1117,30 @@ class Process {
   }
   
   #capture(chunks, chunk, which) {
-    // Capturing without bound is how an endless producer exhausts memory,
-    // and past the string limit the result cannot be built at all. Stop
-    // accumulating there and say so, rather than growing until something
-    // breaks.
-    const held = this.#captured[which];
-    if (held >= MAX_CAPTURE_BYTES) {
-      this.#truncated = true;
+    const limit = this.#captureLimit;
+    if (limit === 0) {
       return;
     }
-    this.#captured[which] = held + chunk.length;
+
     chunks.push(chunk);
+    this.#captured[which] += chunk.length;
+
+    // Over the limit, the oldest bytes go rather than the newest. Whatever
+    // made a command outproduce its own result is diagnosed from the end —
+    // the error, the last thing it managed — and dropping the tail would
+    // throw away exactly that.
+    while (this.#captured[which] > limit && chunks.length > 0) {
+      this.#truncated = true;
+      const excess = this.#captured[which] - limit;
+      const oldest = chunks[0];
+      if (oldest.length <= excess) {
+        chunks.shift();
+        this.#captured[which] -= oldest.length;
+      } else {
+        chunks[0] = oldest.subarray(excess);
+        this.#captured[which] -= excess;
+      }
+    }
   }
   
   #settleOn(child) {

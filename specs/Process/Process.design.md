@@ -336,12 +336,93 @@ class Process {
 - `config` is deep-frozen, including nested objects, so a caller cannot mutate
   a running process's configuration.
 
-- **Capture is bounded.** Output is accumulated up to what a JavaScript
-  string can hold, and `truncated` is set on the result once anything is
-  dropped. An endless producer would otherwise grow the buffer until
-  `Buffer.concat().toString()` exceeded the maximum string length — and that
-  throws inside the completion handler, so the process would not merely lose
-  output, it would never settle at all.
+### Two questions, not one
+
+Running a command raises two independent questions, and conflating them is
+what produced the defects this section exists to prevent:
+
+1. **Do you want to see it?** Output echoed to your terminal as it happens —
+   `output` and `debug`, or the `live` and `interactive` shortcuts.
+2. **Do you want to analyse it?** The program holding the output as a value
+   afterwards — `capture`.
+
+Either answer can be yes or no, independently. Watching a test suite scroll
+past *and* parsing its failures afterwards is a normal thing to want, and so
+is a silent command whose output you only read at the end.
+
+There is a third destination worth naming, because it is what makes turning
+capture off safe: **consuming it yourself**, through iteration, `pipe`, or the
+`output` stream. Those are unaffected by `capture` — it governs what the
+*result* holds, not what the caller can see.
+
+### What capture costs, and when
+
+Intent decides, but boundedness decides the stakes, and both matter:
+
+- **Finite output** — `cat data.json`, `git log`, `find .`. Capture costs
+  memory proportional to the output, once. Fine when you want the value, and
+  merely wasteful when you do not.
+- **Unbounded output** — `npm run dev`, `tail -f`, a watcher. Capture has no
+  end, so the cost is unbounded rather than merely wasteful. Measured on a
+  noisy command: 16MB in 1.5 seconds, roughly 38GB over an hour of a dev
+  server, until memory or the string limit runs out.
+
+So intent says whether to capture; boundedness says what it costs if you get
+that wrong. A 50MB `pg_dump` is perfectly finite and still belongs on disk
+rather than in a string, which is why the question is what you mean to do
+with the output rather than how much of it there is.
+
+`capture` takes:
+
+- **`true`** (default) — collect it, bounded by what a string can hold. That
+  bound is a safety net rather than a policy: it stops a runaway from taking
+  the host down, and is not a number to plan around.
+- **`false`** — collect nothing. `output` and `debug` are empty and memory
+  stays flat however long the command runs. The streams still carry every
+  byte, so iteration, pipelines, and forwarding are unaffected — not
+  capturing is about what the *result* holds, not about what the caller can
+  see.
+- **a number** — collect at most that many bytes.
+
+When a limit is reached the **oldest** bytes go and `truncated` is set on the
+result. Keeping the end is deliberate: whatever made a command outproduce its
+own result is diagnosed from the end — the error, the last thing it managed —
+and keeping the beginning would discard exactly the part worth having.
+
+**Buffering to disk was considered and rejected.** It answers where the bytes
+go without answering the question that matters, which is that a
+multi-gigabyte string cannot be handed to the caller either way. It would add
+temporary-file lifecycle, cleanup after a crash, and — for a library whose
+purpose is not leaking things — command output sitting in a shared temporary
+directory. A caller who wants a large output on disk already has a direct way
+to say so, and it reads better than any option would:
+
+```javascript
+await sh`pg_dump mydb`.pipe(createWriteStream("dump.sql"));
+```
+
+### Shortcuts bundle settings; callers still get the last word
+
+`live`, `interactive`, `safe`, and `sync` are bundles of the settings above,
+and a bundle may well couple the two questions — `live` is about seeing the
+output, and it is reasonable for it to have an opinion about keeping it.
+
+What makes that safe is that the coupling lives in the *configuration*, where
+later settings win, and never in the *interpretation*. Choosing how to see
+the output must not decide, irrevocably, whether it is kept:
+
+```javascript
+await sh.live`npm test`;                      // whatever live says
+await sh.live({ capture: false })`npm run dev`;  // seen, not kept
+await sh.live({ capture: true })`npm test`;      // seen and kept
+```
+
+A caller's own configuration therefore overrides a shortcut's, in every
+chainable. That was not true until it was tested for: `sh.live({ output:
+false })` forwarded anyway, `sh.interactive({ input: false })` inherited
+stdin anyway, and `sh.safe({ throw: true })` swallowed the error anyway,
+because each shortcut merged its own settings last. A bundle you cannot
+adjust is not a shortcut, it is a cage.
 
 ### Configuration
 
@@ -365,6 +446,8 @@ lifecycle: `output: true` configures it, `proc.output` is it flowing, and
   the child to decide.
 - **`env`** — object. Variables, merged over `process.env`.
 - **`cwd`** — string. Working directory.
+- **`capture`** — boolean or number, default `true`. Whether the result
+  carries the output, and at most how many bytes.
 
 Three keys are new:
 

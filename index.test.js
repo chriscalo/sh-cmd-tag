@@ -3050,3 +3050,194 @@ test("a reused input stream does not accumulate listeners or pipes",
     const expected = { listeners: 0, pipes: 0 };
     assert.deepEqual(actual, expected);
   });
+
+test("capture false keeps nothing while the command still runs", async () => {
+  // A process you watch rather than collect — a dev server, a log follow —
+  // should not also accumulate a second copy of every byte in memory.
+  const { sh } = await import("./index.js");
+  const lines = "for i in 1 2 3; do echo line$i; done";
+  
+  const result = await sh({ capture: false })`sh -c ${lines}`;
+  
+  const actual = { ok: result.ok, output: result.output, debug: result.debug };
+  const expected = { ok: true, output: "", debug: "" };
+  assert.deepEqual(actual, expected);
+});
+
+test("capture false still streams to an iterator", async () => {
+  // Not capturing is about what the result holds, not about whether the
+  // caller can see the output.
+  const { sh } = await import("./index.js");
+  const lines = "for i in 1 2 3; do echo line$i; done";
+  
+  let collected = "";
+  for await (const chunk of sh({ capture: false })`sh -c ${lines}`) {
+    collected += chunk.toString();
+  }
+  
+  const actual = collected;
+  const expected = "line1\nline2\nline3\n";
+  assert.equal(actual, expected);
+});
+
+test("a capture limit keeps the end, not the beginning", async () => {
+  // Whatever made a command outproduce its own result is diagnosed from the
+  // end — the error, the last thing it managed. Dropping the tail would
+  // throw away exactly the part worth having.
+  const { sh } = await import("./index.js");
+  const lines = "for i in 1 2 3 4 5; do echo line$i; done";
+  
+  const result = await sh({ capture: 18 })`sh -c ${lines}`;
+  
+  const actual = { output: result.output, truncated: result.truncated };
+  const expected = { output: "line3\nline4\nline5\n", truncated: true };
+  assert.deepEqual(actual, expected);
+});
+
+test("an unbounded producer does not grow the capture without limit",
+  async () => {
+    const { sh } = await import("./index.js");
+    const noisy = "while true; do echo more and more and more output; done";
+    const proc = sh.safe({ capture: 4096 })`sh -c ${noisy}`;
+    
+    setTimeout(() => proc.kill(), 400);
+    const result = await proc;
+    
+    const actual = {
+      within: result.output.length <= 4096,
+      truncated: result.truncated,
+    };
+    const expected = { within: true, truncated: true };
+    assert.deepEqual(actual, expected, `held ${result.output.length} bytes`);
+  });
+
+test("a shortcut's settings can be overridden per call", async () => {
+  // Shortcuts are bundles of settings, and settings combine with later ones
+  // winning. Without this the bundle is a cage: sh.live({ output: false })
+  // silently ignored the caller and forwarded anyway.
+  const { sh } = await import("./index.js");
+  
+  const live = sh.live({ output: false })`echo x`;
+  const interactive = sh.interactive({ input: false })`echo x`;
+  const safe = sh.safe({ throw: true })`echo x`;
+  
+  const actual = {
+    live: live.config.output,
+    interactive: interactive.config.input,
+    safe: safe.config.throw,
+  };
+  const expected = { live: false, interactive: false, safe: true };
+  assert.deepEqual(actual, expected);
+  
+  await Promise.all([live, interactive, safe]);
+});
+
+test("a shortcut still applies its settings when nothing overrides them",
+  async () => {
+    const { sh } = await import("./index.js");
+    
+    const live = sh.live`echo x`;
+    const safe = sh.safe`exit 3`;
+    
+    const actual = {
+      output: live.config.output,
+      debug: live.config.debug,
+      throws: safe.config.throw,
+    };
+    const expected = { output: true, debug: true, throws: false };
+    assert.deepEqual(actual, expected);
+    
+    await Promise.all([live, safe]);
+  });
+
+test("capture can be turned back on for a live command", async () => {
+  // The combination that matters: watch it scroll by and still parse it
+  // afterwards.
+  const { sh } = await import("./index.js");
+  
+  const result = await sh.live({ capture: true })`echo watched-and-kept`;
+  
+  const actual = { output: result.output.trim(), forwarded: result.ok };
+  const expected = { output: "watched-and-kept", forwarded: true };
+  assert.deepEqual(actual, expected);
+});
+
+test("a pipeline can be killed and interrupted, not only stopped",
+  async () => {
+    const { sh } = await import("./index.js");
+    const chain = sh.safe`sleep 30`.pipe`cat`;
+    
+    await chain.kill();
+    
+    const actual = chain.stages.map((stage) => stage.settled);
+    const expected = chain.stages.map(() => true);
+    assert.deepEqual(actual, expected);
+  });
+
+test("interrupting a pipeline settles every stage", async () => {
+  const { sh } = await import("./index.js");
+  const chain = sh.safe`sleep 30`.pipe`cat`;
+  
+  await chain.interrupt();
+  
+  const actual = chain.stages.map((stage) => stage.settled);
+  const expected = chain.stages.map(() => true);
+  assert.deepEqual(actual, expected);
+});
+
+test("finally runs on a pipeline, for both outcomes", async () => {
+  const { sh } = await import("./index.js");
+  let ranOnSuccess = false;
+  let ranOnFailure = false;
+  
+  await sh`echo ok`.pipe`cat`.finally(() => { ranOnSuccess = true; });
+  await sh`cat /nonexistent/path`.pipe`cat`
+    .finally(() => { ranOnFailure = true; })
+    .catch(() => {});
+  
+  const actual = { ranOnSuccess, ranOnFailure };
+  const expected = { ranOnSuccess: true, ranOnFailure: true };
+  assert.deepEqual(actual, expected);
+});
+
+test("a duration of Infinity means no deadline", async () => {
+  const { Process } = await import("./index.js");
+  
+  const proc = new Process("echo hello", {
+    immediate: false,
+    timeout: Infinity,
+  });
+  
+  const actual = (await proc).output.trim();
+  const expected = "hello";
+  assert.equal(actual, expected);
+});
+
+test("a negative duration is rejected", async () => {
+  const { Process } = await import("./index.js");
+  
+  assert.throws(
+    () => new Process("true", { immediate: false, timeout: -1 }),
+    TypeError,
+  );
+});
+
+test("interactive input is refused in synchronous mode", async () => {
+  // There is no way to hand a blocking call the parent's stdin, so saying so
+  // beats pretending.
+  const { sh } = await import("./index.js");
+  
+  assert.throws(
+    () => sh.sync({ input: true })`cat`,
+    /synchronous/i,
+  );
+});
+
+test("input as a chainable accepts a configuration object", async () => {
+  const { sh } = await import("./index.js");
+  
+  const actual = (await sh.input("hello there")({ capture: true })`wc -w`)
+    .output.trim();
+  const expected = "2";
+  assert.equal(actual, expected);
+});

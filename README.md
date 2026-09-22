@@ -288,6 +288,7 @@ Any of these can be passed to `sh({ ... })` or `cmd({ ... })`:
 | `timeout`     | —       | Stop the process after this long             |
 | `gracePeriod` | `5000`  | Wait before escalating a stop to a kill      |
 | `signal`      | —       | An `AbortSignal`; aborting kills the process |
+| `capture`     | `true`  | Whether the result holds the output, or a byte limit |
 | `env`         | —       | Variables, merged over `process.env`         |
 | `cwd`         | —       | Working directory                            |
 
@@ -328,6 +329,58 @@ await sh.live({ color: true })`npm test`;
 ```
 
 Captured output keeps its escape codes: if you asked for colour, you get it.
+
+## Seeing output vs keeping it
+
+Running a command raises two separate questions, and you can answer either
+independently:
+
+1. **Do you want to see it?** — `live` (or `output` / `debug`) echoes the
+   output to your terminal as it happens.
+2. **Do you want to analyse it?** — `capture` decides whether the result
+   holds it afterwards.
+
+```javascript
+await sh`git log`;                             // keep it, don't show it
+await sh.live`npm test`;                       // show it, and keep it
+sh.live({ capture: false })`npm run dev`;      // show it, don't keep it
+await sh({ capture: false })`noisy-cleanup`;   // neither
+```
+
+Iteration, pipelines, and the `output` stream see every byte regardless —
+`capture` governs what the *result* holds, not what you can watch.
+
+Turning it off matters most for a command that never finishes. `result.output`
+is a string, which is the right shape for a command that ends and the wrong
+one for a dev server: capturing it piles up bytes nobody will read, measured
+at about 16MB in a second and a half, which is roughly 38GB over an hour.
+
+A number sets a limit rather than switching capture off entirely:
+
+```javascript
+const result = await sh({ capture: 64 * 1024 })`noisy-build`;
+result.truncated;  // true if anything was dropped
+```
+
+When a limit is reached the **oldest** bytes go, because whatever made a
+command outproduce its own result is usually diagnosed from the end.
+
+And if what you want is a large output on disk, say that directly rather than
+routing it through a string:
+
+```javascript
+await sh`pg_dump mydb`.pipe(createWriteStream("dump.sql"));
+```
+
+### Shortcuts are just settings
+
+`live`, `interactive`, `safe`, and `sync` bundle settings together, and your
+own configuration wins over the bundle:
+
+```javascript
+await sh.live({ output: false })`quiet-after-all`;
+await sh.safe({ throw: true })`throw-after-all`;
+```
 
 ## Synchronous execution
 

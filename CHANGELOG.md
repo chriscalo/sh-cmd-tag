@@ -45,9 +45,18 @@ available — so the same command behaves the same way on macOS and Linux;
 `shell` accepts a string for a caller who wants zsh, dash, or a particular
 path, and `false` to execute directly.
 
-**Captured output is bounded** by what a JavaScript string can hold, and the
-result carries `truncated` once anything is dropped, so an endless producer
-cannot grow the buffer past the point where the result could be built.
+**Seeing output and keeping it are separate choices.** `live` and
+`interactive` echo a command's output to your terminal; `capture` decides
+whether the result holds it afterwards. Either can be yes or no
+independently, so watching a test suite scroll past and parsing its failures
+afterwards is one call. `capture: false` keeps nothing, which is what a
+command that never finishes needs; a number sets a byte limit, dropping the
+oldest bytes and setting `truncated`. Iteration, pipelines, and forwarding
+see every byte regardless.
+
+**Shortcuts are bundles of settings, and your own configuration wins.**
+`sh.live({ output: false })` and `sh.safe({ throw: true })` mean what they
+say.
 
 **Requirements.** Node 22 or newer, macOS or Linux, zero dependencies.
 Windows is not supported: the escaping is POSIX-specific.
