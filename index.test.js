@@ -2865,3 +2865,22 @@ test("stopping delivers one signal, not two", async () => {
     try { unlinkSync(script); } catch {}
   }
 });
+
+test("a safe pipeline short-circuits too", async () => {
+  // A safe stage resolves a failed result rather than rejecting, so watching
+  // only for rejections left safe chains waiting on stages that a failure
+  // had already made pointless.
+  const { sh } = await import("./index.js");
+  const started = Date.now();
+  
+  const result = await sh.safe`false`.pipe`sleep 30`;
+  const elapsed = Date.now() - started;
+  
+  const actual = {
+    ok: result.ok,
+    stage: result.error.stage,
+    promptly: elapsed < 5000,
+  };
+  const expected = { ok: false, stage: 0, promptly: true };
+  assert.deepEqual(actual, expected, `took ${elapsed}ms`);
+});

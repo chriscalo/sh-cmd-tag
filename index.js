@@ -1378,7 +1378,17 @@ class Pipeline {
     // the earliest failure, so the original cause is what gets reported.
     for (const stage of this.#stages) {
       if (stage instanceof Process) {
-        stage.catch(() => this.#teardown());
+        stage.then(
+          // A safe stage resolves a failed result rather than rejecting, so
+          // watching only for rejections would leave `.safe` chains waiting
+          // on the very stages a failure has made pointless.
+          (result) => {
+            if (result && result.ok === false) {
+              this.#teardown();
+            }
+          },
+          () => this.#teardown(),
+        );
       }
     }
     
