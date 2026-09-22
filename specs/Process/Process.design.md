@@ -115,8 +115,8 @@ alternating return type that [Pipelines](#pipelines) exists to remove.
 
 Iteration is for *consuming* output. Echoing a child's output to the parent's
 stdout and stderr is a separate concern, already implemented, and stays where
-it is: the `echo` flag, which is opt-in and off by default. It is set by
-`sh({ echo: true })`, `sh.live`, and `sh.interactive`.
+it is: the `output` and `debug` flags, which are opt-in and absent from the
+defaults. `sh({ output: true })`, `sh.live`, and `sh.interactive` set them.
 
 That separation is why the iteration example above prints each chunk exactly
 once: a plain `sh\`cmd\`` captures without forwarding, so the loop body is the
@@ -252,7 +252,7 @@ class Process {
   start()            // idempotent, returns this
   pipe(stage)        // returns the pipeline so far
 
-  stop()             // terminate politely, escalating if ignored
+  stop(opts)         // terminate politely, escalating if ignored
   kill()             // immediate, cannot be refused
   interrupt()        // what Ctrl-C sends
 
@@ -279,58 +279,41 @@ class Process {
 
 ### Configuration
 
-The keys are named for what they do to the process, and each one means one
-thing. This is worth stating because the previous set did not: `output: true`
-was config meaning "echo to the parent", while `result.output` was the
-captured text — the same word for two different concepts, in the same API.
-Nothing is published yet, so this is the moment to fix that rather than freeze
-it.
+The existing keys are unchanged. `output`, `debug`, and `input` name the
+process's three streams, and they keep that meaning at every point in the
+lifecycle: `output: true` configures it, `proc.output` is it flowing, and
+`result.output` is it finished. One concept, three moments.
 
 - **`immediate`** — boolean, default `true`. Start on construction rather
   than waiting for `start()`.
-- **`shell`** — boolean or string, default `true`. `true` lets the library
-  select one; a string names an interpreter explicitly.
-- **`echo`** — boolean, `"output"`, or `"debug"`; default `false`. Mirror the
-  child's streams to the parent's terminal as they arrive.
-- **`stdin`** — boolean, default `false`. Inherit the parent's stdin.
-- **`input`** — string or stream. Data to write to the child's stdin.
+- **`shell`** — boolean, default `true`. Run through a shell.
+- **`output`** — boolean, default `false`. Stream stdout to the parent live.
+- **`debug`** — boolean, default `false`. Stream stderr to the parent live.
+- **`input`** — boolean, string, or stream. `true` inherits the parent's
+  stdin; a string or stream is written to the child.
 - **`throw`** — boolean, default `true`. Reject on failure, or resolve a
   result carrying `.error`.
 - **`color`** — boolean. Force colour on or off in the child. Unset leaves
   the child to decide.
-- **`timeout`** — milliseconds. Stop the process after this long.
-- **`grace`** — milliseconds, default `5000`. Wait between the polite stop
-  and the forced one.
 - **`env`** — object. Variables, merged over `process.env`.
 - **`cwd`** — string. Working directory.
 
-Four of these changed name or shape, each for a reason:
+Two keys are new, both belonging to the stop/timeout vocabulary:
 
-- **`echo` replaces the `output` and `debug` booleans.** Those collided with
-  `result.output` and `result.debug`, which hold captured text — so `output`
-  meant "forward it" in one place and "here it is" in another. `echo` says
-  what actually happens: the bytes are mirrored to the parent's terminal on
-  their way past. `echo: true` covers both streams, and `"output"` or
-  `"debug"` narrows it to one. `.live` is `{ echo: true }`; `.interactive` is
-  `{ echo: true, stdin: true }`.
-- **`stdin` splits out of `input`.** `input` previously meant both "inherit
-  the parent's stdin" (`true`) and "write this data" (a string or stream) —
-  two unrelated operations behind one key, where the type of the value decided
-  which one you got. Now `stdin: true` inherits and `input: data` writes, and
-  both can be answered independently.
-- **`grace` drops the unit suffix**, because `timeout` does not carry one
-  either and a config object should not mix conventions. Both are
-  milliseconds, stated once here, matching Node.
-- **`shell` accepts a string.** `true` means "the library picks" — see
-  [Shell selection](#shell-selection-and-platform) — and a string names one
-  explicitly for a caller who needs a specific interpreter. One key answers
-  both "use a shell?" and "which one?", instead of a second key that is
-  meaningless whenever the first is `false`.
+- **`timeout`** — milliseconds. Stop the process after this long. No default,
+  matching Node.
+- **`killAfter`** — milliseconds, default `5000`. How long a polite stop is
+  given before it escalates to an unrefusable kill.
 
-The result shape — `ok`, `output`, `debug`, `error` — is unchanged. It is the
-library's established vocabulary, every existing test reads it, and the
-collision that motivated the rename is resolved by moving the *config* name
-rather than the *result* name.
+`killAfter` is named for what happens rather than for the interval itself: a
+reader sees "kill after 5000" and knows both the action and when. It carries
+no unit suffix because `timeout` does not either — both are milliseconds,
+stated once here, matching Node. The same key tunes an explicit stop:
+
+```javascript
+await sh({ timeout: 30_000 })`npm test`;   // 30s, then stop, then kill
+await proc.stop({ killAfter: 2_000 });     // be less patient this once
+```
 
 `sync` is not a `Process` option. Synchronous execution bypasses this class
 entirely — see below.
@@ -395,7 +378,7 @@ await sh({ timeout: 30_000 })`npm test`;
 
 The rejection is a `ProcessError` with `timedOut: true`, carrying whatever
 output was captured before the process was stopped — a timeout is a failure
-with evidence, not a blank one. `grace` defaults to 5000ms. There is no
+with evidence, not a blank one. `killAfter` defaults to 5000ms. There is no
 default timeout, matching Node.
 
 #### Timeouts in `.sync`
@@ -409,7 +392,7 @@ to send exactly one signal at the deadline.
 So `.sync` sends **`SIGKILL`** at the deadline rather than `SIGTERM`, because
 a child that ignored `SIGTERM` would otherwise blow through the deadline and
 hang the call — the worst outcome in the one mode where the caller cannot
-intervene. `grace` is meaningless synchronously and is ignored. The result
+intervene. `killAfter` is meaningless synchronously and is ignored. The result
 carries `timedOut: true` exactly as the asynchronous form does.
 
 The promise is therefore identical across modes — the deadline is enforced and
@@ -432,8 +415,8 @@ keyboard:
 | `.live`         | no              | yes              | yes      |
 | `.interactive`  | yes             | yes              | yes      |
 
-It is a configuration alias — `{ echo: true }` — not a separate execution
-path, and it composes with the other chainables (`sh.safe.live`,
+It is a configuration alias — `{ output: true, debug: true }` — not a separate
+execution path, and it composes with the other chainables (`sh.safe.live`,
 `sh.live({ timeout: 60_000 })`).
 
 ### Color in live mode
@@ -592,28 +575,26 @@ issue rather than in a checklist file.
 **Lifecycle control**
 
 55. `stop()` terminates politely and resolves once the process exits.
-56. `stop()` escalates to an unrefusable kill after `grace` if the process
-    ignores the polite request.
-57. `kill()` terminates immediately and unrefusably.
-58. `interrupt()` delivers the equivalent of Ctrl-C.
-59. Stopping an already-exited process is a no-op, not a throw.
-60. Stopping a pipeline stops every stage.
-61. `timeout` stops a process at the deadline and rejects a `ProcessError`
+56. `stop()` escalates to an unrefusable kill after `killAfter` if the
+    process ignores the polite request.
+57. `stop({ killAfter })` overrides the escalation delay for one call.
+58. `kill()` terminates immediately and unrefusably.
+59. `interrupt()` delivers the equivalent of Ctrl-C.
+60. Stopping an already-exited process is a no-op, not a throw.
+61. Stopping a pipeline stops every stage.
+62. `timeout` stops a process at the deadline and rejects a `ProcessError`
     with `timedOut: true`.
-62. A timed-out rejection carries the output captured before the stop.
-63. Under `throw: false`, a timeout resolves `ok: false` with
+63. A timed-out rejection carries the output captured before the stop.
+64. Under `throw: false`, a timeout resolves `ok: false` with
     `.error.timedOut`.
-64. `.sync` honours `timeout`, enforcing the deadline unrefusably and setting
+65. `.sync` honours `timeout`, enforcing the deadline unrefusably and setting
     `timedOut`.
 
 **Live mode and colour**
 
-65. `echo: true` mirrors both streams; `"output"` and `"debug"` narrow it.
-66. `stdin: true` inherits the parent's stdin; `input` writes data, and the
-    two are independent.
-67. `.live` is `{ echo: true }`, `.interactive` adds `stdin: true`, and both
-    compose with the other chainables.
-68. `shell` accepts a string naming an explicit interpreter.
+66. `.live` forwards stdout and stderr while still capturing both.
+67. `.live` does not inherit stdin.
+68. `.live` composes with the other chainables.
 69. `color: true` sets `FORCE_COLOR` in the child environment.
 70. `color: false` sets `NO_COLOR` in the child environment.
 71. `color` unset adds neither variable, and no state ever sets both.
