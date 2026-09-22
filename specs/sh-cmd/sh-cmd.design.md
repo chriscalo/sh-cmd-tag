@@ -736,7 +736,7 @@ await cmd`cat ${malicious}`;
 - shell metacharacter handling.
 
 **Explicitly outside the model:** the contents of a command string the caller
-writes literally. `sh\`rm -rf /\`` does what it says; the library guarantees
+writes literally. `` sh`rm -rf /` `` does what it says; the library guarantees
 that *interpolated values* cannot escape their position, not that a
 hand-written command is wise.
 

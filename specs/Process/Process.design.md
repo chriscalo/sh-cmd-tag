@@ -119,7 +119,7 @@ it is: the `output` and `debug` flags, which are opt-in and absent from the
 defaults. `sh({ output: true })`, `sh.live`, and `sh.interactive` set them.
 
 That separation is why the iteration example above prints each chunk exactly
-once: a plain `sh\`cmd\`` captures without forwarding, so the loop body is the
+once: a plain `` sh`cmd` `` captures without forwarding, so the loop body is the
 only writer.
 
 ## Pipelines
@@ -215,7 +215,7 @@ dash does not degrade; it aborts before the command runs. So the library
 than inheriting whatever the host ships. Three consequences:
 
 1. The same command means the same thing on macOS and Linux.
-2. Pipeline failure reporting is simply on, so `sh\`cat missing.txt | wc -l\``
+2. Pipeline failure reporting is simply on, so `` sh`cat missing.txt | wc -l` ``
    obeys the same rule as a `pipe()` chain, with no flag for a caller to know
    about. The rule holds at every boundary, whether the library composed the
    pipeline or the shell did.
@@ -230,7 +230,7 @@ environment difference can see what ran.
 implicit. The reason is not effort but correctness: `shellEscape`
 (`index.js:23-41`) quotes with POSIX single quotes, which `cmd.exe` treats as
 ordinary characters. The library's central guarantee would therefore be a
-no-op there — `sh\`echo ${"x & calc.exe"}\`` would leave `&` live as a command
+no-op there — `` sh`echo ${"x & calc.exe"}` `` would leave `&` live as a command
 separator. Supporting Windows means a second escaping strategy plus CI on a
 Windows runner, and until that exists, claiming support would be false.
 
@@ -659,12 +659,12 @@ issue rather than in a checklist file.
 
 **Shell selection and integration**
 
-47. `sh\`cat missing.txt | wc -l\`` rejects, because pipeline failure
+47. `` sh`cat missing.txt | wc -l` `` rejects, because pipeline failure
     reporting is on in the selected shell.
 48. The same command yields the same result and error shape across supported
     shells.
-49. `sh\`cmd\`` returns a `Process`.
-50. `cmd\`cmd\`` returns a `Process`.
+49. `` sh`cmd` `` returns a `Process`.
+50. `` cmd`cmd` `` returns a `Process`.
 51. `sh({ immediate: false })` defers.
 52. `.safe`, `.interactive`, and `.input(data)` merge config into the
     constructor, including in combination.
