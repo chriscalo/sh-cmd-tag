@@ -316,11 +316,15 @@ test("should throw for sync execution with a stream", () => {
 });
 
 test(
-  "sh.interactive.input should provide data then enable interactive stdin",
+  "sh.interactive.input replaces inherited stdin with the given data",
   async () => {
-    const interactiveWithInput = sh.interactive.input("initial data\n");
-    const actual = typeof interactiveWithInput;
-    const expected = "function";
+    // There is one `input` setting and the later one wins: `interactive`
+    // asks for the parent's stdin, `.input(data)` then asks for data
+    // instead. The command reads the data and nothing else.
+    const result = await sh.interactive.input("initial data\n")`cat`;
+
+    const actual = result.output;
+    const expected = "initial data\n";
     assert.equal(actual, expected);
   }
 );
@@ -715,11 +719,12 @@ test("cmd.interactive is a function", () => {
 
 
 test(
-  "cmd.interactive.input should provide data then enable interactive stdin",
+  "cmd.interactive.input replaces inherited stdin with the given data",
   async () => {
-    const interactiveWithInput = cmd.interactive.input("initial data\n");
-    const actual = typeof interactiveWithInput;
-    const expected = "function";
+    const result = await cmd.interactive.input("initial data\n")`cat`;
+
+    const actual = result.output;
+    const expected = "initial data\n";
     assert.equal(actual, expected);
   }
 );
@@ -3240,4 +3245,200 @@ test("input as a chainable accepts a configuration object", async () => {
     .output.trim();
   const expected = "2";
   assert.equal(actual, expected);
+});
+
+// --- blind spots a refactor could pass through -----------------------------
+//
+// Two behaviours were asserted only indirectly: stdin inheritance was checked
+// by reading back the config, and signal delivery was checked by watching the
+// direct child. Both would keep passing if the wiring underneath broke. These
+// drive the real thing instead.
+
+function runInvoker(stdinData, timeoutMs = 5000) {
+  const invokerPath = join(__dirname, "index.test.interactive-invoke.js");
+  const child = spawn("node", [invokerPath], {
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  
+  let output = "";
+  let debug = "";
+  child.stdout.on("data", (chunk) => { output += chunk; });
+  child.stderr.on("data", (chunk) => { debug += chunk; });
+  child.stdin.end(stdinData);
+  
+  return Promise.race([
+    new Promise((resolve, reject) => {
+      child.on("close", (code) => resolve({ code, output, debug }));
+      child.on("error", reject);
+    }),
+    new Promise((resolve) => setTimeout(() => {
+      child.kill("SIGKILL");
+      resolve({ code: "TIMED OUT", output, debug });
+    }, timeoutMs)),
+  ]);
+}
+
+test("interactive really inherits stdin, end to end", async () => {
+  // Asserting `config.input === true` passes even if the stdio array is
+  // built wrong. The bytes have to make the whole trip: this test's write
+  // -> the invoker's stdin -> the inherited fd -> `cat` -> forwarded back
+  // out -> this test's read.
+  const { code, output, debug } = await runInvoker("round trip\n");
+  
+  const actual = { code, output };
+  const expected = { code: 0, output: "round trip\n" };
+  assert.deepEqual(actual, expected, debug);
+});
+
+function isAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function waitForExit(pid, timeoutMs = 3000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!isAlive(pid)) return true;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return !isAlive(pid);
+}
+
+// A shell without job control puts its background children in its own
+// process group, so the grandchild is reachable only by signalling the
+// group. Printing its pid lets the test check the thing that actually
+// matters: whether it is gone afterwards.
+const SPAWNS_GRANDCHILD = "sleep 300 & echo $!; wait";
+
+function grandchildPidOf(proc) {
+  // Deliberately not `for await ... break`: breaking out of iteration stops
+  // the process, so every assertion below would pass against a kill() that
+  // did nothing at all. Listening leaves the process running, untouched.
+  return new Promise((resolve, reject) => {
+    const onData = (chunk) => {
+      const pid = Number(String(chunk).trim().split("\n")[0]);
+      if (Number.isInteger(pid) && pid > 0) {
+        proc.output.off("data", onData);
+        resolve(pid);
+      }
+    };
+    proc.output.on("data", onData);
+    setTimeout(() => reject(new Error("no pid was reported")), 3000);
+  });
+}
+
+test("kill reaps the whole tree, not just the direct child", async () => {
+  // Signalling only the child leaves its children running and holding the
+  // pipe open — the failure that first showed up as `sh`sleep 30`` never
+  // settling. Checking the grandchild by pid turns that hang into a
+  // failed assertion.
+  const proc = sh.safe`${markSafeString(SPAWNS_GRANDCHILD)}`;
+  const grandchild = await grandchildPidOf(proc);
+  
+  await proc.kill();
+  await proc;
+  
+  const actual = await waitForExit(grandchild);
+  const expected = true;
+  assert.equal(actual, expected, `pid ${grandchild} survived the kill`);
+});
+
+test("stop reaps the whole tree, not just the direct child", async () => {
+  const proc = sh.safe`${markSafeString(SPAWNS_GRANDCHILD)}`;
+  const grandchild = await grandchildPidOf(proc);
+  
+  await proc.stop({ gracePeriod: "500ms" });
+  await proc;
+  
+  const actual = await waitForExit(grandchild);
+  const expected = true;
+  assert.equal(actual, expected, `pid ${grandchild} survived the stop`);
+});
+
+test("a timeout reaps the whole tree", async () => {
+  const proc = sh.safe({ timeout: "700ms", gracePeriod: "300ms" })
+    `${markSafeString(SPAWNS_GRANDCHILD)}`;
+  const grandchild = await grandchildPidOf(proc);
+  const result = await proc;
+  
+  const actual = {
+    timedOut: Boolean(result.error?.timedOut),
+    reaped: await waitForExit(grandchild),
+  };
+  const expected = { timedOut: true, reaped: true };
+  assert.deepEqual(actual, expected, `pid ${grandchild} survived the timeout`);
+});
+
+test("a failing pipeline leaves no stage running", async () => {
+  // Tearing down a pipeline has to reach the processes, not just reject the
+  // promise. A surviving stage holds a pipe open and shows up later as an
+  // unrelated hang.
+  const proc = sh.safe`${markSafeString(SPAWNS_GRANDCHILD)}`;
+  const grandchild = await grandchildPidOf(proc);
+  
+  const result = await proc.pipe`false`.pipe`cat`;
+  
+  const actual = { ok: result.ok, reaped: await waitForExit(grandchild) };
+  const expected = { ok: false, reaped: true };
+  assert.deepEqual(actual, expected, `pid ${grandchild} survived the pipeline`);
+});
+
+test("an aborted process reaps the whole tree", async () => {
+  const controller = new AbortController();
+  const proc = sh.safe({ signal: controller.signal })
+    `${markSafeString(SPAWNS_GRANDCHILD)}`;
+  const grandchild = await grandchildPidOf(proc);
+  
+  controller.abort();
+  await proc;
+  
+  const actual = await waitForExit(grandchild);
+  const expected = true;
+  assert.equal(actual, expected, `pid ${grandchild} survived the abort`);
+});
+
+test("a marked string interpolates as itself, in both tags", async () => {
+  // Marking exists so a caller can interpolate a string they have already
+  // made safe. It is a String object, so the object branch claimed it
+  // first and rejected its indices as flag names — every existing test
+  // called isSafeString or shellEscape directly, so none of them ever put
+  // a marked string where it was meant to go.
+  const actual = {
+    sh: (await sh`${markSafeString("echo one; echo two")}`).output,
+    quoted: (await sh`echo "${markSafeString("x y")}"`).output,
+    inArray: (await sh`echo ${[markSafeString("a b"), "c d"]}`).output,
+    cmd: (await cmd`echo ${markSafeString("literal")}`).output,
+  };
+  const expected = {
+    sh: "one\ntwo\n",
+    quoted: "x y\n",
+    inArray: "a b c d\n",
+    cmd: "literal\n",
+  };
+  assert.deepEqual(actual, expected);
+});
+
+test("marking one value does not unmark the escaping around it", async () => {
+  // The ordering fix must not become a hole: an unmarked value sitting
+  // next to a marked one is still escaped, and a plain object is still
+  // read as flags rather than as a safe string.
+  const hostile = "hi; echo PWNED";
+  
+  const actual = {
+    sh: (await sh`echo ${hostile}`).output,
+    cmd: (await cmd`echo ${hostile}`).output,
+    mixed: (await sh`echo ${markSafeString("safe")} ${hostile}`).output,
+    flags: (await sh`echo ${{ verbose: true, out: "d" }}`).output,
+  };
+  const expected = {
+    sh: "hi; echo PWNED\n",
+    cmd: "hi; echo PWNED\n",
+    mixed: "safe hi; echo PWNED\n",
+    flags: "--verbose --out=d\n",
+  };
+  assert.deepEqual(actual, expected);
 });

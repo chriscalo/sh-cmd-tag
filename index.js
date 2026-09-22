@@ -384,7 +384,13 @@ function getInterpolationContext(beforeValue, afterValue) {
 }
 
 function valueToShellString(value, context = { type: "unquoted" }) {
-  if (value && typeof value === "object" && !Array.isArray(value)) {
+  // A marked string is a String object, so this has to come first: the
+  // object branch below would otherwise read it as a bag of flags and
+  // reject its indices as flag names, making the one thing marking is for
+  // — interpolating it — the one thing that could not be done with it.
+  if (isSafeString(value)) {
+    return String(value);
+  } else if (value && typeof value === "object" && !Array.isArray(value)) {
     return objectToShellSafeFlags(value);
   } else if (Array.isArray(value)) {
     return arrayToShellArgs(value);
@@ -441,7 +447,11 @@ function buildCommandString(strings, values) {
 }
 
 function valueToCommandString(value) {
-  if (value && typeof value === "object" && !Array.isArray(value)) {
+  // Same ordering as valueToShellString: a marked string is a String
+  // object and would otherwise be read as a bag of flags.
+  if (isSafeString(value)) {
+    return String(value);
+  } else if (value && typeof value === "object" && !Array.isArray(value)) {
     return objectToCLIFlags(value);
   } else if (Array.isArray(value)) {
     return arrayToCommandArgs(value);
