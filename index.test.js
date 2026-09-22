@@ -3016,3 +3016,25 @@ test("the chosen shell is introspectable", async () => {
   const expected = "/bin/dash";
   assert.equal(actual, expected);
 });
+
+test("a reused input stream does not accumulate listeners or pipes",
+  async () => {
+    // One listener and one pipe destination per command would otherwise
+    // stay attached to a stream the caller reuses, until Node warns about
+    // the leak it has come to look like.
+    const { sh } = await import("./index.js");
+    const { PassThrough } = await import("node:stream");
+    const { getEventListeners } = await import("node:events");
+    const shared = new PassThrough();
+    
+    for (let index = 0; index < 12; index++) {
+      await sh.safe({ input: shared })`true`;
+    }
+    
+    const actual = {
+      listeners: getEventListeners(shared, "error").length,
+      pipes: shared._readableState.pipes.length,
+    };
+    const expected = { listeners: 0, pipes: 0 };
+    assert.deepEqual(actual, expected);
+  });

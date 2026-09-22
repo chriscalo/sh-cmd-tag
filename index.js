@@ -824,6 +824,7 @@ class Process {
   #truncated = false;
   #inheritedStdin = false;
   #abortListener;
+  #detachInput;
   
   /**
    * Creates a new Process instance.
@@ -1086,11 +1087,20 @@ class Process {
       // A source the caller owns can fail, and without a listener that is an
       // unhandled error event. Closing both ends means the child sees EOF
       // rather than waiting forever for input that will never arrive.
-      input.on("error", () => {
+      const onSourceError = () => {
         this.#io.input.destroy();
         this.#childProcess?.stdin?.destroy();
-      });
+      };
+      input.on("error", onSourceError);
       input.pipe(this.#io.input);
+      // Held so both can be released once the process settles. A caller
+      // reusing one stream across commands would otherwise leave a listener
+      // and a pipe destination behind for each, until Node warns about the
+      // leak it has come to look like.
+      this.#detachInput = () => {
+        input.off("error", onSourceError);
+        input.unpipe(this.#io.input);
+      };
     }
   }
   
@@ -1116,6 +1126,11 @@ class Process {
       
       // An inherited stdin holds the event loop open long after the child is
       // gone, so release it the moment the process settles.
+      if (this.#detachInput) {
+        this.#detachInput();
+        this.#detachInput = undefined;
+      }
+
       if (this.#abortListener) {
         this.#config.signal?.removeEventListener("abort", this.#abortListener);
         this.#abortListener = undefined;
@@ -1146,7 +1161,11 @@ class Process {
       }
       
       if (this.#config.throw === false) {
-        this.#resolve(new ProcessResult({ ok: false, error, output, debug }));
+        const failed = new ProcessResult({ ok: false, error, output, debug });
+        if (this.#truncated) {
+          failed.truncated = true;
+        }
+        this.#resolve(failed);
       } else {
         this.#reject(error);
       }
