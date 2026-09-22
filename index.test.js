@@ -2998,17 +2998,22 @@ test("a caller can choose the shell", async () => {
   // /bin/sh is named rather than /bin/dash so this asserts on every POSIX
   // host instead of skipping where dash is absent. A test that can skip
   // itself into silence proves nothing about the hosts that skip it.
-  const { sh } = await import("./index.js");
+  const { sh, Process } = await import("./index.js");
+  // The unnamed case is compared against whatever the library selected, not
+  // a hardcoded path: bash sits at different paths across distributions, and
+  // on a host with no bash at all, falling back to /bin/sh is correct
+  // behaviour that a hardcoded expectation would report as a failure.
+  const selected = new Process("true", { immediate: false }).shell;
 
   const actual = {
     named: (await sh({ shell: "/bin/sh" })`echo $0`).output.trim(),
     sync: sh.sync({ shell: "/bin/sh" })`echo $0`.output.trim(),
-    fallsBackToSelected: (await sh`echo $0`).output.trim(),
+    unnamed: (await sh`echo $0`).output.trim(),
   };
   const expected = {
     named: "/bin/sh",
     sync: "/bin/sh",
-    fallsBackToSelected: "/bin/bash",
+    unnamed: selected,
   };
   assert.deepEqual(actual, expected);
 });
