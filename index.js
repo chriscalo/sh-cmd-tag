@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PassThrough, Readable, Writable } from "node:stream";
+import { finished } from "node:stream/promises";
 
 // Safe string infrastructure
 const SHELL_SAFE = Symbol("shellSafe");
@@ -564,6 +565,33 @@ function addChainableProps(fn, useShell, isSync, baseOptions = {}) {
     configurable: true,
   });
   
+  // Live mode - forward both streams without inheriting stdin. The gap
+  // between a plain call, which captures silently, and .interactive, which
+  // also hands the child the parent's keyboard.
+  Object.defineProperty(fn, "live", {
+    get() {
+      const liveOptions = { ...baseOptions, output: true, debug: true };
+      const liveFn = (strings, ...values) => {
+        if (typeof strings === "object" && !Array.isArray(strings)) {
+          const options = { ...strings, ...liveOptions };
+          return function(templateStrings, ...templateValues) {
+            return executeCommand(
+              templateStrings,
+              templateValues,
+              useShell,
+              isSync,
+              options,
+            );
+          };
+        }
+        return executeCommand(strings, values, useShell, isSync, liveOptions);
+      };
+      addChainableProps(liveFn, useShell, isSync, liveOptions);
+      return liveFn;
+    },
+    configurable: true,
+  });
+  
   // Interactive mode - alias for output + debug
   Object.defineProperty(fn, "interactive", {
     get() {
@@ -803,7 +831,9 @@ class Process {
    * @returns {string} The command string
    */
   get command() {
-    return this.#commandString;
+    return Array.isArray(this.#commandString)
+      ? this.#commandString.join(" ")
+      : this.#commandString;
   }
   
   /**
@@ -874,7 +904,11 @@ class Process {
   
   #spawn() {
     const useShell = this.#config.shell !== false;
-    const parts = useShell ? null : parseCommand(this.#commandString.trim());
+    const parts = useShell
+      ? null
+      : (Array.isArray(this.#commandString)
+        ? this.#commandString
+        : parseCommand(this.#commandString.trim()));
     
     this.#childProcess = spawn(
       useShell ? this.#commandString : parts[0],
@@ -884,11 +918,17 @@ class Process {
         cwd: this.#config.cwd,
         env: buildEnvironment(this.#config),
         stdio: ["pipe", "pipe", "pipe"],
+        // The child leads its own process group, so stopping it can reach
+        // the whole tree. Without this, `sh`sleep 30`` stops the shell and
+        // leaves sleep running — holding the output pipe open, so the
+        // process does not even appear to have finished.
+        detached: true,
       },
     );
     
     this.#bridgeStreams();
     this.#connectInput();
+    this.#connectAbortSignal();
     this.#settleOn(this.#childProcess);
     this.#armTimeout();
   }
@@ -917,6 +957,20 @@ class Process {
     if (child.stdin) {
       this.#io.input.pipe(child.stdin);
     }
+  }
+  
+  #connectAbortSignal() {
+    const { signal } = this.#config;
+    if (!signal) {
+      return;
+    }
+    // An abort means now, everywhere else in the platform, so it maps to
+    // kill() rather than the graceful stop().
+    if (signal.aborted) {
+      this.kill();
+      return;
+    }
+    signal.addEventListener("abort", () => this.kill(), { once: true });
   }
   
   #connectInput() {
@@ -1039,12 +1093,12 @@ class Process {
       "gracePeriod",
     );
     
-    this.#childProcess.kill("SIGTERM");
+    this.#signalTree("SIGTERM");
     
     if (grace !== Infinity) {
       const timer = setTimeout(() => {
         if (!this.#settled) {
-          this.#childProcess.kill("SIGKILL");
+          this.#signalTree("SIGKILL");
         }
       }, grace);
       timer.unref?.();
@@ -1063,7 +1117,7 @@ class Process {
     if (!this.started || this.#settled) {
       return;
     }
-    this.#childProcess.kill("SIGKILL");
+    this.#signalTree("SIGKILL");
     await this.#promise.catch(() => {});
   }
   
@@ -1076,8 +1130,22 @@ class Process {
     if (!this.started || this.#settled) {
       return;
     }
-    this.#childProcess.kill("SIGINT");
+    this.#signalTree("SIGINT");
     await this.#promise.catch(() => {});
+  }
+  
+  /**
+   * Signals the child's whole process group, falling back to the child
+   * alone if the group is already gone.
+   */
+  #signalTree(signal) {
+    try {
+      process.kill(-this.#childProcess.pid, signal);
+    } catch {
+      try {
+        this.#childProcess.kill(signal);
+      } catch {}
+    }
   }
   
   /**
@@ -1097,6 +1165,175 @@ class Process {
       (value) => Promise.resolve(onFinally()).then(() => value),
       (reason) => Promise.resolve(onFinally()).then(() => Promise.reject(reason)),
     );
+  }
+  
+  /**
+   * A process is a source of its own output: iterating it yields stdout
+   * chunks. Use `debug` for stderr; a failure throws an error already
+   * carrying it.
+   */
+  async *[Symbol.asyncIterator]() {
+    this.start();
+    try {
+      for await (const chunk of this.#io.output) {
+        yield chunk;
+      }
+    } finally {
+      // Abandoning the loop early must not leave the child running.
+      if (!this.#settled) {
+        await this.stop();
+      }
+    }
+    // Iteration ends where the process ends, so a failure surfaces here
+    // rather than the loop finishing quietly on partial output.
+    await this.#promise;
+  }
+  
+  /**
+   * Pipes this process into the next stage, returning the pipeline so far.
+   */
+  pipe(...args) {
+    return new Pipeline(this).pipe(...args);
+  }
+}
+
+/**
+ * Checks whether a function was invoked as a tagged template literal. A true
+ * template tag call gets a `raw` property on its strings array.
+ */
+function isTemplateTagInvocation(args) {
+  const [strings] = args;
+  return Array.isArray(strings) && "raw" in strings;
+}
+
+/**
+ * A pipeline of stages, each a process or a stream.
+ *
+ * `pipe()` returns this rather than the destination or the source, so the
+ * return type never depends on the argument type: one value that is
+ * awaitable when every stage has finished, iterable over the last stage, and
+ * pipeable onward from it.
+ */
+class Pipeline {
+  #stages = [];
+  
+  constructor(source) {
+    this.#stages.push(source);
+  }
+  
+  get #tail() {
+    return this.#stages[this.#stages.length - 1];
+  }
+  
+  get #tailOutput() {
+    const tail = this.#tail;
+    return tail instanceof Process ? tail.output : tail;
+  }
+  
+  /**
+   * Gets the processes in this pipeline, in order.
+   */
+  get stages() {
+    return this.#stages.filter((stage) => stage instanceof Process);
+  }
+  
+  pipe(...args) {
+    const source = this.#tailOutput;
+    const inherited = this.#inheritedConfig();
+    let next;
+    
+    if (isTemplateTagInvocation(args)) {
+      const [strings, ...values] = args;
+      const command = inherited.shell === false
+        ? buildCommandString(strings, values)
+        : buildShellExpression(strings, values);
+      next = new Process(command, inherited);
+    } else if (Array.isArray(args[0])) {
+      next = new Process(args[0], { ...inherited, shell: false });
+    } else if (args[0] && typeof args[0].write === "function") {
+      next = args[0];
+    } else {
+      throw new TypeError(
+        "pipe() takes a command, as a template tag or an argv array, or a " +
+        "writable stream",
+      );
+    }
+    
+    source.pipe(next instanceof Process ? next.input : next);
+    this.#stages.push(next);
+    return this;
+  }
+  
+  #inheritedConfig() {
+    const source = this.#stages[0];
+    const { shell, cwd, env, color, throw: shouldThrow } = source.config ?? {};
+    return { shell, cwd, env, color, throw: shouldThrow };
+  }
+  
+  /**
+   * Settles when every stage has finished. A pipeline is ok only if every
+   * stage is ok: composing results conjoins them, and the first failure
+   * short-circuits, carrying which stage failed.
+   */
+  async #settle() {
+    const processes = this.stages;
+    const results = await Promise.allSettled(processes.map((p) => p));
+    const streamEnds = this.#stages
+      .filter((stage) => !(stage instanceof Process))
+      .map((stream) => finished(stream).catch((error) => { throw error; }));
+    await Promise.allSettled(streamEnds);
+    
+    const failedIndex = results.findIndex((r) => r.status === "rejected");
+    if (failedIndex !== -1) {
+      const error = results[failedIndex].reason;
+      error.stage = failedIndex;
+      error.command = processes[failedIndex].command;
+      throw error;
+    }
+    
+    const settled = results.map((r) => r.value);
+    const failedResult = settled.findIndex((r) => r && r.ok === false);
+    if (failedResult !== -1) {
+      return settled[failedResult];
+    }
+    return settled[settled.length - 1];
+  }
+  
+  then(onFulfilled, onRejected) {
+    return this.#settle().then(onFulfilled, onRejected);
+  }
+  
+  catch(onRejected) {
+    return this.then(undefined, onRejected);
+  }
+  
+  finally(onFinally) {
+    return this.then(
+      (value) => Promise.resolve(onFinally()).then(() => value),
+      (reason) => Promise.resolve(onFinally()).then(() => Promise.reject(reason)),
+    );
+  }
+  
+  async *[Symbol.asyncIterator]() {
+    for await (const chunk of this.#tailOutput) {
+      yield chunk;
+    }
+    await this.#settle();
+  }
+  
+  /**
+   * Stopping a pipeline stops every stage.
+   */
+  async stop(options) {
+    await Promise.all(this.stages.map((p) => p.stop(options)));
+  }
+  
+  async kill() {
+    await Promise.all(this.stages.map((p) => p.kill()));
+  }
+  
+  async interrupt() {
+    await Promise.all(this.stages.map((p) => p.interrupt()));
   }
 }
 

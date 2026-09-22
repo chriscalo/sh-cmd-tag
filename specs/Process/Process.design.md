@@ -456,6 +456,14 @@ await proc.interrupt();  // what Ctrl-C does
 Each resolves once the process has actually exited, so a caller can await a
 clean shutdown.
 
+**Signals reach the whole process group, not just the child.** The child is
+spawned as its own group leader and stopping it signals the group. Without
+that, stopping a shell-wrapped command stops only the shell: `` sh`sleep 30` ``
+would terminate the shell and leave `sleep` running, still holding the output
+pipe open, so the process would not even appear to have finished. That is not
+a theoretical concern — it showed up as a `stop()` test taking thirty seconds
+to do something that should take milliseconds.
+
 **No raw signal method ships.** These three verbs describe *intent* — what a
 caller wants to happen to the process. A signal is a *mechanism*, and the gap
 between the two is the thing worth hiding: a caller who wants a dev server to

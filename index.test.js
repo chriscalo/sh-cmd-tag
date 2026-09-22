@@ -1889,3 +1889,550 @@ test("exposed streams exist before the process starts", async () => {
   assert.ok(proc.debug instanceof Readable);
   assert.ok(proc.input instanceof Writable);
 });
+
+// --- streams and lifecycle -------------------------------------------------
+
+test("exposed streams are the same objects after start", async () => {
+  const { Process } = await import("./index.js");
+  const proc = new Process("echo hello", { immediate: false });
+  
+  const before = [proc.output, proc.debug, proc.input];
+  proc.start();
+  const after = [proc.output, proc.debug, proc.input];
+  
+  assert.deepEqual(after, before);
+  await proc;
+});
+
+test("a handler attached before start receives data after it", async () => {
+  const { Process } = await import("./index.js");
+  const proc = new Process("echo hello world", { immediate: false });
+  
+  let captured = "";
+  proc.output.on("data", (chunk) => {
+    captured += chunk.toString();
+  });
+  
+  proc.start();
+  await proc;
+  
+  const actual = captured.trim();
+  const expected = "hello world";
+  assert.equal(actual, expected);
+});
+
+test("input written before start reaches the child", async () => {
+  const { Process } = await import("./index.js");
+  const proc = new Process("cat", { immediate: false });
+  
+  proc.input.write("written early\n");
+  proc.input.end();
+  proc.start();
+  
+  const actual = (await proc).output.trim();
+  const expected = "written early";
+  assert.equal(actual, expected);
+});
+
+test("multiple pre-start writes keep their order", async () => {
+  const { Process } = await import("./index.js");
+  const proc = new Process("cat", { immediate: false });
+  
+  proc.input.write("first\n");
+  proc.input.write("second\n");
+  proc.input.write("third\n");
+  proc.input.end();
+  proc.start();
+  
+  const actual = (await proc).output.trim();
+  const expected = "first\nsecond\nthird";
+  assert.equal(actual, expected);
+});
+
+test("output and debug emit nothing before start", async () => {
+  const { Process } = await import("./index.js");
+  const proc = new Process("echo hello", { immediate: false });
+  
+  let emitted = false;
+  proc.output.on("data", () => { emitted = true; });
+  proc.debug.on("data", () => { emitted = true; });
+  
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  
+  const actual = emitted;
+  const expected = false;
+  assert.equal(actual, expected);
+  
+  await proc;
+});
+
+test("the selected shell is introspectable", async () => {
+  const { Process } = await import("./index.js");
+  const proc = new Process("echo hello", { immediate: false });
+  
+  assert.match(proc.shell, /\/(ba)?sh$/);
+});
+
+test("config is frozen all the way down", async () => {
+  const { Process } = await import("./index.js");
+  const proc = new Process("echo hello", {
+    immediate: false,
+    env: { NESTED: "value" },
+  });
+  
+  assert.ok(Object.isFrozen(proc.config));
+  assert.ok(Object.isFrozen(proc.config.env));
+});
+
+// --- result semantics ------------------------------------------------------
+
+test("catch and finally behave as Promise analogues", async () => {
+  const { Process } = await import("./index.js");
+  
+  const caught = await new Process("exit 7").catch((error) => error.code);
+  assert.equal(caught, 7);
+  
+  let ran = false;
+  await new Process("echo hello").finally(() => { ran = true; });
+  assert.ok(ran);
+});
+
+test("cwd is honoured", async () => {
+  const { sh } = await import("./index.js");
+  
+  const actual = (await sh({ cwd: "/tmp" })`pwd`).output.trim();
+  assert.match(actual, /tmp$/);
+});
+
+test("env is merged over the parent environment", async () => {
+  const { sh } = await import("./index.js");
+  
+  const actual = (await sh({ env: { CUSTOM_VAR: "custom" } })`echo $CUSTOM_VAR`)
+    .output.trim();
+  const expected = "custom";
+  assert.equal(actual, expected);
+});
+
+// --- stopping --------------------------------------------------------------
+
+test("stop terminates the process and resolves once it exits", async () => {
+  const { Process } = await import("./index.js");
+  const proc = new Process("sleep 30");
+  
+  await proc.stop();
+  
+  const actual = proc.started;
+  const expected = true;
+  assert.equal(actual, expected);
+});
+
+test("stop escalates when the process ignores the polite request", async () => {
+  const { Process } = await import("./index.js");
+  const proc = new Process("trap '' TERM; sleep 30");
+  
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const started = Date.now();
+  await proc.stop({ gracePeriod: "200ms" });
+  const elapsed = Date.now() - started;
+  
+  assert.ok(elapsed < 3000, `escalation took ${elapsed}ms`);
+});
+
+test("kill terminates immediately", async () => {
+  const { Process } = await import("./index.js");
+  const proc = new Process("sleep 30");
+  
+  await proc.kill();
+  
+  await assert.rejects(async () => { await proc; });
+});
+
+test("interrupt delivers the Ctrl-C equivalent", async () => {
+  const { Process } = await import("./index.js");
+  const proc = new Process("sleep 30");
+  
+  await proc.interrupt();
+  
+  await assert.rejects(async () => { await proc; });
+});
+
+test("stopping an already-exited process is a no-op", async () => {
+  const { Process } = await import("./index.js");
+  const proc = new Process("echo hello");
+  
+  await proc;
+  await proc.stop();
+  await proc.kill();
+});
+
+// --- timeouts --------------------------------------------------------------
+
+test("timeout stops the process and reports timedOut", async () => {
+  const { sh } = await import("./index.js");
+  
+  await assert.rejects(
+    async () => { await sh({ timeout: "200ms" })`sleep 30`; },
+    (error) => {
+      assert.equal(error.name, "ProcessError");
+      assert.equal(error.timedOut, true);
+      return true;
+    },
+  );
+});
+
+test("a timed-out process keeps the output captured before the stop",
+  async () => {
+    const { sh } = await import("./index.js");
+    
+    await assert.rejects(
+      async () => {
+        await sh({ timeout: "400ms" })`echo before; sleep 30`;
+      },
+      (error) => {
+        assert.match(error.output, /before/);
+        return true;
+      },
+    );
+  });
+
+test("safe mode resolves a timeout instead of rejecting", async () => {
+  const { sh } = await import("./index.js");
+  
+  const result = await sh.safe({ timeout: "200ms" })`sleep 30`;
+  
+  assert.equal(result.ok, false);
+  assert.equal(result.error.timedOut, true);
+});
+
+test("the timeout clock starts when the process starts", async () => {
+  const { Process } = await import("./index.js");
+  const proc = new Process("echo hello", {
+    immediate: false,
+    timeout: "300ms",
+  });
+  
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  
+  const actual = (await proc).output.trim();
+  const expected = "hello";
+  assert.equal(actual, expected);
+});
+
+// --- durations -------------------------------------------------------------
+
+test("durations accept milliseconds or a unit string", async () => {
+  const { Process } = await import("./index.js");
+  
+  assert.doesNotThrow(() => new Process("true", {
+    immediate: false, timeout: 1000,
+  }));
+  assert.doesNotThrow(() => new Process("true", {
+    immediate: false, timeout: "1s",
+  }));
+  assert.doesNotThrow(() => new Process("true", {
+    immediate: false, timeout: "0.5s",
+  }));
+});
+
+test("a unitless duration string is rejected when config is built",
+  async () => {
+    const { Process } = await import("./index.js");
+    
+    assert.throws(
+      () => new Process("true", { immediate: false, timeout: "30" }),
+      TypeError,
+    );
+  });
+
+// --- colour ----------------------------------------------------------------
+
+test("color true sets FORCE_COLOR in the child", async () => {
+  const { sh } = await import("./index.js");
+  
+  const actual = (await sh({ color: true })`echo "$FORCE_COLOR|$NO_COLOR"`)
+    .output.trim();
+  const expected = "1|";
+  assert.equal(actual, expected);
+});
+
+test("color false sets NO_COLOR in the child", async () => {
+  const { sh } = await import("./index.js");
+  
+  const actual = (await sh({ color: false })`echo "$FORCE_COLOR|$NO_COLOR"`)
+    .output.trim();
+  const expected = "|1";
+  assert.equal(actual, expected);
+});
+
+test("color unset adds neither variable", async () => {
+  const { sh } = await import("./index.js");
+  
+  const actual = (await sh`echo "$FORCE_COLOR|$NO_COLOR"`).output.trim();
+  const expected = "|";
+  assert.equal(actual, expected);
+});
+
+// --- iteration -------------------------------------------------------------
+
+test("iterating a process yields its stdout", async () => {
+  const { sh } = await import("./index.js");
+  
+  let collected = "";
+  for await (const chunk of sh`printf "one\ntwo\n"`) {
+    collected += chunk.toString();
+  }
+  
+  const actual = collected;
+  const expected = "one\ntwo\n";
+  assert.equal(actual, expected);
+});
+
+test("iterating a failing command throws at the end", async () => {
+  const { sh } = await import("./index.js");
+  
+  await assert.rejects(async () => {
+    for await (const chunk of sh`echo partial; exit 4`) {
+      assert.ok(chunk);
+    }
+  });
+});
+
+test("awaiting after iterating still gives a complete result", async () => {
+  const { sh } = await import("./index.js");
+  const proc = sh`printf "alpha\n"`;
+  
+  let collected = "";
+  for await (const chunk of proc) {
+    collected += chunk.toString();
+  }
+  const result = await proc;
+  
+  const actual = result.output;
+  const expected = collected;
+  assert.equal(actual, expected);
+});
+
+test("abandoning iteration early does not leave the child running",
+  async () => {
+    const { sh } = await import("./index.js");
+    const proc = sh`sh -c 'while true; do echo tick; sleep 0.05; done'`;
+    
+    for await (const chunk of proc) {
+      assert.ok(chunk);
+      break;
+    }
+    
+    const actual = proc.started;
+    const expected = true;
+    assert.equal(actual, expected);
+  });
+
+// --- pipelines -------------------------------------------------------------
+
+test("a two-stage chain moves data end to end", async () => {
+  const { sh } = await import("./index.js");
+  
+  const actual = (await sh`printf "a\nb\nc\n"`.pipe`grep b`).output.trim();
+  const expected = "b";
+  assert.equal(actual, expected);
+});
+
+test("a three-stage chain composes", async () => {
+  const { sh } = await import("./index.js");
+  
+  const actual = (await sh`printf "1\n2\n3\n"`.pipe`grep -v 2`.pipe`wc -l`)
+    .output.trim();
+  const expected = "2";
+  assert.equal(actual, expected);
+});
+
+test("pipe accepts an argv array as a stage", async () => {
+  const { sh } = await import("./index.js");
+  
+  const actual = (await sh`echo hello`.pipe(["cat"])).output.trim();
+  const expected = "hello";
+  assert.equal(actual, expected);
+});
+
+test("interpolation in a pipe stage is escaped", async () => {
+  const { sh } = await import("./index.js");
+  const pattern = "b; echo pwned";
+  
+  const actual = (await sh.safe`printf "a\nb\n"`.pipe`grep ${pattern}`)
+    .output.trim();
+  const expected = "";
+  assert.equal(actual, expected);
+});
+
+test("a chain rejects with the first failing stage", async () => {
+  const { sh } = await import("./index.js");
+  
+  await assert.rejects(
+    async () => { await sh`cat /nonexistent/path`.pipe`wc -l`; },
+    (error) => {
+      assert.equal(error.name, "ProcessError");
+      assert.equal(error.stage, 0);
+      assert.match(error.command, /nonexistent/);
+      return true;
+    },
+  );
+});
+
+test("a chain whose stages all succeed resolves the last result",
+  async () => {
+    const { sh } = await import("./index.js");
+    
+    const result = await sh`echo hello`.pipe`tr a-z A-Z`;
+    
+    assert.ok(result.ok);
+    assert.equal(result.output.trim(), "HELLO");
+  });
+
+test("pipe accepts a writable stream as a stage", async () => {
+  const { sh } = await import("./index.js");
+  const { createWriteStream, readFileSync, unlinkSync } =
+    await import("node:fs");
+  const path = "/tmp/sh-cmd-tag-pipe-test.txt";
+  
+  try {
+    await sh`echo to-a-file`.pipe(createWriteStream(path));
+    
+    const actual = readFileSync(path, "utf-8").trim();
+    const expected = "to-a-file";
+    assert.equal(actual, expected);
+  } finally {
+    try { unlinkSync(path); } catch {}
+  }
+});
+
+test("a stream stage can be followed by a command stage", async () => {
+  const { sh } = await import("./index.js");
+  const { PassThrough } = await import("node:stream");
+  
+  const actual = (await sh`echo mixed`.pipe(new PassThrough()).pipe`cat`)
+    .output.trim();
+  const expected = "mixed";
+  assert.equal(actual, expected);
+});
+
+test("iterating a chain yields the last stage's output", async () => {
+  const { sh } = await import("./index.js");
+  
+  let collected = "";
+  for await (const chunk of sh`printf "x\ny\n"`.pipe`grep y`) {
+    collected += chunk.toString();
+  }
+  
+  const actual = collected.trim();
+  const expected = "y";
+  assert.equal(actual, expected);
+});
+
+test("pipe rejects a stage that is neither a command nor a stream",
+  async () => {
+    const { sh } = await import("./index.js");
+    const proc = sh`echo hello`;
+    
+    assert.throws(() => proc.pipe(42), TypeError);
+    await proc;
+  });
+
+test("stopping a pipeline stops every stage", async () => {
+  const { sh } = await import("./index.js");
+  const chain = sh`sleep 30`.pipe`cat`;
+  
+  await chain.stop();
+  
+  for (const stage of chain.stages) {
+    assert.ok(stage.started);
+  }
+});
+
+// --- live mode -------------------------------------------------------------
+
+test("live forwards both streams and captures them", async () => {
+  const { sh } = await import("./index.js");
+  const proc = sh.live`echo shown`;
+  
+  assert.equal(proc.config.output, true);
+  assert.equal(proc.config.debug, true);
+  
+  const actual = (await proc).output.trim();
+  const expected = "shown";
+  assert.equal(actual, expected);
+});
+
+test("live does not inherit stdin", async () => {
+  const { sh } = await import("./index.js");
+  const proc = sh.live`echo hello`;
+  
+  const actual = proc.config.input;
+  const expected = undefined;
+  assert.equal(actual, expected);
+  
+  await proc;
+});
+
+test("live composes with the other chainables", async () => {
+  const { sh } = await import("./index.js");
+  
+  const result = await sh.safe.live`exit 5`;
+  
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, 5);
+});
+
+// --- abort signal ----------------------------------------------------------
+
+test("aborting the signal kills the process", async () => {
+  const { sh } = await import("./index.js");
+  const controller = new AbortController();
+  const proc = sh({ signal: controller.signal })`sleep 30`;
+  
+  setTimeout(() => controller.abort(), 50);
+  
+  await assert.rejects(async () => { await proc; });
+});
+
+test("an already-aborted signal kills the process at once", async () => {
+  const { sh } = await import("./index.js");
+  
+  await assert.rejects(
+    async () => { await sh({ signal: AbortSignal.abort() })`sleep 30`; },
+  );
+});
+
+// --- the tags return processes ---------------------------------------------
+
+test("sh and cmd return Process instances", async () => {
+  const { sh, cmd, Process } = await import("./index.js");
+  
+  const shProc = sh`echo hello`;
+  const cmdProc = cmd`echo hello`;
+  
+  assert.ok(shProc instanceof Process);
+  assert.ok(cmdProc instanceof Process);
+  
+  await shProc;
+  await cmdProc;
+});
+
+test("sh with immediate false defers execution", async () => {
+  const { sh } = await import("./index.js");
+  const proc = sh({ immediate: false })`echo deferred`;
+  
+  assert.equal(proc.started, false);
+  
+  const actual = (await proc).output.trim();
+  const expected = "deferred";
+  assert.equal(actual, expected);
+});
+
+test("sync still returns a ProcessResult directly", async () => {
+  const { sh, ProcessResult, Process } = await import("./index.js");
+  
+  const result = sh.sync`echo sync`;
+  
+  assert.ok(result instanceof ProcessResult);
+  assert.ok(!(result instanceof Process));
+});
