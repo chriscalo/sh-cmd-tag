@@ -115,8 +115,8 @@ alternating return type that [Pipelines](#pipelines) exists to remove.
 
 Iteration is for *consuming* output. Echoing a child's output to the parent's
 stdout and stderr is a separate concern, already implemented, and stays where
-it is: the `output` and `debug` flags, which are opt-in and absent from the
-defaults. `sh({ output: true })` and `sh.interactive` set them.
+it is: the `echo` flag, which is opt-in and off by default. It is set by
+`sh({ echo: true })`, `sh.live`, and `sh.interactive`.
 
 That separation is why the iteration example above prints each chunk exactly
 once: a plain `sh\`cmd\`` captures without forwarding, so the loop body is the
@@ -279,19 +279,58 @@ class Process {
 
 ### Configuration
 
-| Option      | Default | Meaning                                          |
-| ----------- | ------- | ------------------------------------------------ |
-| `immediate` | `true`  | Start on construction rather than on `start()`   |
-| `shell`     | `true`  | Run through the selected shell                   |
-| `throw`     | `true`  | Reject on failure; `false` resolves with `.error`|
-| `input`     | —       | String, stream, or `true` to inherit stdin       |
-| `output`    | `false` | Forward stdout to the parent's stdout            |
-| `debug`     | `false` | Forward stderr to the parent's stderr            |
-| `color`     | —       | `true` sets `FORCE_COLOR`, `false` sets `NO_COLOR`|
-| `timeout`   | —       | Milliseconds before the process is stopped       |
-| `graceMs`   | `5000`  | Wait between `SIGTERM` and `SIGKILL` on timeout  |
-| `env`       | —       | Environment variables, merged over `process.env` |
-| `cwd`       | —       | Working directory                                |
+The keys are named for what they do to the process, and each one means one
+thing. This is worth stating because the previous set did not: `output: true`
+was config meaning "echo to the parent", while `result.output` was the
+captured text — the same word for two different concepts, in the same API.
+Nothing is published yet, so this is the moment to fix that rather than freeze
+it.
+
+- **`immediate`** — boolean, default `true`. Start on construction rather
+  than waiting for `start()`.
+- **`shell`** — boolean or string, default `true`. `true` lets the library
+  select one; a string names an interpreter explicitly.
+- **`echo`** — boolean, `"output"`, or `"debug"`; default `false`. Mirror the
+  child's streams to the parent's terminal as they arrive.
+- **`stdin`** — boolean, default `false`. Inherit the parent's stdin.
+- **`input`** — string or stream. Data to write to the child's stdin.
+- **`throw`** — boolean, default `true`. Reject on failure, or resolve a
+  result carrying `.error`.
+- **`color`** — boolean. Force colour on or off in the child. Unset leaves
+  the child to decide.
+- **`timeout`** — milliseconds. Stop the process after this long.
+- **`grace`** — milliseconds, default `5000`. Wait between the polite stop
+  and the forced one.
+- **`env`** — object. Variables, merged over `process.env`.
+- **`cwd`** — string. Working directory.
+
+Four of these changed name or shape, each for a reason:
+
+- **`echo` replaces the `output` and `debug` booleans.** Those collided with
+  `result.output` and `result.debug`, which hold captured text — so `output`
+  meant "forward it" in one place and "here it is" in another. `echo` says
+  what actually happens: the bytes are mirrored to the parent's terminal on
+  their way past. `echo: true` covers both streams, and `"output"` or
+  `"debug"` narrows it to one. `.live` is `{ echo: true }`; `.interactive` is
+  `{ echo: true, stdin: true }`.
+- **`stdin` splits out of `input`.** `input` previously meant both "inherit
+  the parent's stdin" (`true`) and "write this data" (a string or stream) —
+  two unrelated operations behind one key, where the type of the value decided
+  which one you got. Now `stdin: true` inherits and `input: data` writes, and
+  both can be answered independently.
+- **`grace` drops the unit suffix**, because `timeout` does not carry one
+  either and a config object should not mix conventions. Both are
+  milliseconds, stated once here, matching Node.
+- **`shell` accepts a string.** `true` means "the library picks" — see
+  [Shell selection](#shell-selection-and-platform) — and a string names one
+  explicitly for a caller who needs a specific interpreter. One key answers
+  both "use a shell?" and "which one?", instead of a second key that is
+  meaningless whenever the first is `false`.
+
+The result shape — `ok`, `output`, `debug`, `error` — is unchanged. It is the
+library's established vocabulary, every existing test reads it, and the
+collision that motivated the rename is resolved by moving the *config* name
+rather than the *result* name.
 
 `sync` is not a `Process` option. Synchronous execution bypasses this class
 entirely — see below.
@@ -322,14 +361,25 @@ await proc.interrupt();  // what Ctrl-C does
 Each resolves once the process has actually exited, so a caller can await a
 clean shutdown.
 
-**No raw signal method ships in `1.0.0`.** Two reasons, and the second is the
-decisive one. First, an escape hatch handing back `SIGHUP` strings would undo
-the renaming in the same breath — the point of these verbs is that a caller
-never has to learn signal semantics to stop a process. Second, semver:
-`1.0.0` freezes this surface, and adding `signal()` later is a minor bump
-while removing it would be a major one. So the small vocabulary ships, and a
-real request from someone who actually needs `SIGHUP` can drive the addition
-rather than speculation now.
+**No raw signal method ships.** These three verbs describe *intent* — what a
+caller wants to happen to the process. A signal is a *mechanism*, and the gap
+between the two is the thing worth hiding: a caller who wants a dev server to
+shut down cleanly should not have to know that the way to say so is `SIGTERM`
+rather than `SIGQUIT`, or that one of them is catchable and the other is not.
+
+The three verbs cover what callers of *this* library actually do: stop a dev
+server, force-kill something wedged, and send the Ctrl-C an interactive
+program is waiting for. The signals they would reach past this API for —
+`SIGHUP` to reload a config, `SIGUSR1` to trigger a dump — belong to daemon
+management, and someone managing a long-lived daemon is reaching for systemd
+or a process supervisor, not a template-tag shell library. Serving those cases
+would mean serving a user this library does not have.
+
+A raw signal method would also re-export exactly the platform detail the rest
+of the design works to absorb: which signals exist, and what they do, varies
+by platform. Having just decided the library picks its own shell so callers
+need not care about the host, handing back `SIGHUP` strings would undo that in
+the same breath.
 
 Stopping a pipeline stops every stage.
 
@@ -345,7 +395,7 @@ await sh({ timeout: 30_000 })`npm test`;
 
 The rejection is a `ProcessError` with `timedOut: true`, carrying whatever
 output was captured before the process was stopped — a timeout is a failure
-with evidence, not a blank one. `graceMs` defaults to 5000. There is no
+with evidence, not a blank one. `grace` defaults to 5000ms. There is no
 default timeout, matching Node.
 
 #### Timeouts in `.sync`
@@ -359,7 +409,7 @@ to send exactly one signal at the deadline.
 So `.sync` sends **`SIGKILL`** at the deadline rather than `SIGTERM`, because
 a child that ignored `SIGTERM` would otherwise blow through the deadline and
 hang the call — the worst outcome in the one mode where the caller cannot
-intervene. `graceMs` is meaningless synchronously and is ignored. The result
+intervene. `grace` is meaningless synchronously and is ignored. The result
 carries `timedOut: true` exactly as the asynchronous form does.
 
 The promise is therefore identical across modes — the deadline is enforced and
@@ -382,8 +432,8 @@ keyboard:
 | `.live`         | no              | yes              | yes      |
 | `.interactive`  | yes             | yes              | yes      |
 
-It is a configuration alias — `{ output: true, debug: true }` — not a separate
-execution path, and it composes with the other chainables (`sh.safe.live`,
+It is a configuration alias — `{ echo: true }` — not a separate execution
+path, and it composes with the other chainables (`sh.safe.live`,
 `sh.live({ timeout: 60_000 })`).
 
 ### Color in live mode
@@ -410,6 +460,17 @@ no escape codes; with `FORCE_COLOR=1` it emits `^[[34m`.
 `color: true` sets `FORCE_COLOR=1` in the child environment, the Node
 ecosystem's convention, honoured by chalk, npm, jest, and vitest. `color:
 false` sets `NO_COLOR=1`, the cross-language convention from no-color.org.
+
+The library never calls `isTTY` itself. It appears in that ladder as an
+explanation of what the *child* does, not as something this code consults —
+and the design deliberately keeps it that way: `color` unset means the library
+adds nothing and the child decides from its own environment, which is one
+fewer piece of magic to explain. The alternative would be a `color: "auto"`
+default that mirrors the parent's terminal-ness into the child, so that live
+output looks the way it would if the command had been run by hand. That is
+defensible and remains available later; it is not the default because "unset
+means we do not interfere" is easier to reason about than a rule that reads
+the parent's environment behind the caller's back.
 
 **Exactly one variable is ever set, never both.** Precedence between them is
 implementation-dependent: no-color.org recommends `NO_COLOR` win, but Node 24
@@ -531,7 +592,7 @@ issue rather than in a checklist file.
 **Lifecycle control**
 
 55. `stop()` terminates politely and resolves once the process exits.
-56. `stop()` escalates to an unrefusable kill after `graceMs` if the process
+56. `stop()` escalates to an unrefusable kill after `grace` if the process
     ignores the polite request.
 57. `kill()` terminates immediately and unrefusably.
 58. `interrupt()` delivers the equivalent of Ctrl-C.
@@ -547,10 +608,13 @@ issue rather than in a checklist file.
 
 **Live mode and colour**
 
-65. `.live` forwards stdout and stderr while still capturing both.
-66. `.live` does not inherit stdin.
-67. `.live` composes with the other chainables.
-68. `color: true` sets `FORCE_COLOR` in the child environment.
-69. `color: false` sets `NO_COLOR` in the child environment.
-70. `color` unset adds neither variable, and no state ever sets both.
-71. Captured output retains escape codes when colour was forced on.
+65. `echo: true` mirrors both streams; `"output"` and `"debug"` narrow it.
+66. `stdin: true` inherits the parent's stdin; `input` writes data, and the
+    two are independent.
+67. `.live` is `{ echo: true }`, `.interactive` adds `stdin: true`, and both
+    compose with the other chainables.
+68. `shell` accepts a string naming an explicit interpreter.
+69. `color: true` sets `FORCE_COLOR` in the child environment.
+70. `color: false` sets `NO_COLOR` in the child environment.
+71. `color` unset adds neither variable, and no state ever sets both.
+72. Captured output retains escape codes when colour was forced on.
