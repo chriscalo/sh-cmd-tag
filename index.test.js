@@ -16,6 +16,24 @@ import {
 const DEBUG = process.env.DEBUG?.includes("test");
 const __dirname = dirname(new URL(import.meta.url).pathname);
 
+/**
+ * Runs `fn` and returns what it threw, or null if it did not throw.
+ *
+ * A test that only asserts "something threw" reads as a bare assertion and
+ * says nothing about what it expected. Returning the error lets the parts
+ * that matter — the type, what the message names — be bound to `actual`
+ * and compared against a named `expected`, so a failure prints the
+ * difference instead of a stack trace.
+ */
+function errorFrom(fn) {
+  try {
+    fn();
+    return null;
+  } catch (error) {
+    return error;
+  }
+}
+
 test("every tag and chainable on the public surface exists", () => {
   // One map rather than a test each. These only say the surface is there;
   // what each one does is asserted by the behaviour tests below, which is
@@ -1133,173 +1151,76 @@ test("sh preserves valid flag names without transformation", async () => {
 });
 
 // Security tests - malicious object keys
-test("sh rejects flag names with shell metacharacters", async () => {
-  const args = { "$(echo PWNED)": "value" };
-  assert.throws(() => {
-    sh`echo ${args}`;
-  }, /Invalid flag name/, 
-    `Should reject shell metacharacters: "$(echo PWNED)"`);
+//
+// One table rather than a test each. A flag name is rejected or it is not,
+// so the interesting thing is the whole set at once: a deepEqual over every
+// case names the ones that changed, where twenty-four separate throws-tests
+// reported only the first to break. Every input is kept verbatim.
+const REJECTED_FLAG_NAMES = [
+  "$(echo PWNED)",
+  "; echo HACKED",
+  "`echo INJECTED`",
+  "../../etc/passwd",
+  "foo bar",
+  "123invalid",
+  "",
+  "with.dots",
+  "foo..bar",
+  "file.txt",
+  "-$(whoami)",
+  "--$(echo test)",
+  "---$(evil)",
+  "-; echo hacked",
+  "--foo bar",
+  "----foo bar",
+  "-123invalid",
+  "--with.dots",
+  "-",
+  "--",
+  "---",
+  "----",
+  "------",
+];
+
+test("every malicious flag name is refused, by both tags", () => {
+  const refusalFor = (tag, name) => {
+    const error = errorFrom(() => tag`echo ${{ [name]: "value" }}`);
+    return error === null
+      ? "accepted"
+      : /Invalid flag name/.test(error.message)
+        ? "refused"
+        : `wrong error: ${error.message}`;
+  };
+  
+  const actual = REJECTED_FLAG_NAMES.map((name) => ({
+    name,
+    sh: refusalFor(sh, name),
+    cmd: refusalFor(cmd, name),
+  }));
+  const expected = REJECTED_FLAG_NAMES.map((name) => ({
+    name,
+    sh: "refused",
+    cmd: "refused",
+  }));
+  assert.deepEqual(actual, expected);
 });
 
-test("sh rejects flag names with shell injection", async () => {
-  const args = { "; echo HACKED": "value" };
-  assert.throws(() => {
-    sh`echo ${args}`;
-  }, /Invalid flag name/, `Should reject shell injection: "; echo HACKED"`);
-});
-
-test("sh rejects flag names with backticks", async () => {
-  const args = { "`echo INJECTED`": "value" };
-  assert.throws(() => {
-    sh`echo ${args}`;
-  }, /Invalid flag name/, `Should reject backticks: "\`echo INJECTED\`"`);
-});
-
-test("sh rejects flag names with path traversal", async () => {
-  const args = { "../../etc/passwd": "value" };
-  assert.throws(() => {
-    sh`echo ${args}`;
-  }, /Invalid flag name/, `Should reject path traversal: "../../etc/passwd"`);
-});
-
-test("sh rejects flag names with spaces", async () => {
-  const args = { "foo bar": "value" };
-  assert.throws(() => {
-    sh`echo ${args}`;
-  }, /Invalid flag name/, `Should reject spaces: "foo bar"`);
-});
-
-test("sh rejects flag names starting with numbers", async () => {
-  const args = { "123invalid": "value" };
-  assert.throws(() => {
-    sh`echo ${args}`;
-  }, /Invalid flag name/, `Should reject starts with number: "123invalid"`);
-});
-
-test("sh rejects empty flag names", async () => {
-  const args = { "": "value" };
-  assert.throws(() => {
-    sh`echo ${args}`;
-  }, /Invalid flag name/, `Should reject empty: ""`);
-});
-
-test("sh rejects flag names with dots", async () => {
-  const args = { "with.dots": "value" };
-  assert.throws(() => {
-    sh`echo ${args}`;
-  }, /Invalid flag name/, `Should reject dots not allowed: "with.dots"`);
-});
-
-test("sh rejects flag names with double dots", async () => {
-  const args = { "foo..bar": "value" };
-  assert.throws(() => {
-    sh`echo ${args}`;
-  }, /Invalid flag name/, `Should reject double dots: "foo..bar"`);
-});
-
-test("sh rejects file-like flag names with extensions", async () => {
-  const args = { "file.txt": "value" };
-  assert.throws(() => {
-    sh`echo ${args}`;
-  }, /Invalid flag name/, `Should reject file-like with extension: "file.txt"`);
-});
-
-test("sh rejects pre-dashed flag names with shell metacharacters (short dash)", 
-     async () => {
-  const args = { "-$(whoami)": "value" };
-  assert.throws(() => {
-    sh`echo ${args}`;
-  }, /Invalid flag name/, "Should reject shell metacharacters with short dash");
-});
-
-test("sh rejects pre-dashed flag names with shell metacharacters (long dash)", 
-     async () => {
-  const args = { "--$(echo test)": "value" };
-  assert.throws(() => {
-    sh`echo ${args}`;
-  }, /Invalid flag name/, "Should reject shell metacharacters with long dash");
-});
-
-test("sh rejects pre-dashed flag names with shell metacharacters (triple dash)", 
-     async () => {
-  const args = { "---$(evil)": "value" };
-  assert.throws(() => {
-    sh`echo ${args}`;
-  }, /Invalid flag name/, "Should reject shell metacharacters with triple dash");
-});
-
-test("sh rejects pre-dashed flag names with shell injection (short dash)", 
-     async () => {
-  const args = { "-; echo hacked": "value" };
-  assert.throws(() => {
-    sh`echo ${args}`;
-  }, /Invalid flag name/, "Should reject shell injection with short dash");
-});
-
-test("sh rejects pre-dashed flag names with spaces (long dash)", async () => {
-  const args = { "--foo bar": "value" };
-  assert.throws(() => {
-    sh`echo ${args}`;
-  }, /Invalid flag name/, "Should reject spaces with long dash");
-});
-
-test("sh rejects pre-dashed flag names with spaces (quad dash)", async () => {
-  const args = { "----foo bar": "value" };
-  assert.throws(() => {
-    sh`echo ${args}`;
-  }, /Invalid flag name/, "Should reject spaces with quad dash");
-});
-
-test("sh rejects pre-dashed flag names starting with numbers (short dash)", 
-     async () => {
-  const args = { "-123invalid": "value" };
-  assert.throws(() => {
-    sh`echo ${args}`;
-  }, /Invalid flag name/, 
-    "Should reject starts with number with short dash");
-});
-
-test("sh rejects pre-dashed flag names with dots (long dash)", async () => {
-  const args = { "--with.dots": "value" };
-  assert.throws(() => {
-    sh`echo ${args}`;
-  }, /Invalid flag name/, 
-    "Should reject dots not allowed with long dash");
-});
-
-test("sh rejects just a dash as flag name", async () => {
-  const args = { "-": "value" };
-  assert.throws(() => {
-    sh`echo ${args}`;
-  }, /Invalid flag name/, "Should reject just a dash");
-});
-
-test("sh rejects just double dash as flag name", async () => {
-  const args = { "--": "value" };
-  assert.throws(() => {
-    sh`echo ${args}`;
-  }, /Invalid flag name/, "Should reject just double dash");
-});
-
-test("sh rejects just triple dash as flag name", async () => {
-  const args = { "---": "value" };
-  assert.throws(() => {
-    sh`echo ${args}`;
-  }, /Invalid flag name/, "Should reject just triple dash");
-});
-
-test("sh rejects just quad dash as flag name", async () => {
-  const args = { "----": "value" };
-  assert.throws(() => {
-    sh`echo ${args}`;
-  }, /Invalid flag name/, "Should reject just quad dash");
-});
-
-test("sh rejects just many dashes as flag name", async () => {
-  const args = { "------": "value" };
-  assert.throws(() => {
-    sh`echo ${args}`;
-  }, /Invalid flag name/, "Should reject just many dashes");
+test("a malicious key is refused alongside innocent ones", () => {
+  // The original cmd case: a bad key mixed in with a good one must still
+  // sink the whole object rather than being dropped quietly.
+  const maliciousArgs = {
+    "$(echo KEY)": "$(echo VALUE)",
+    "foo bar": "value",
+  };
+  
+  const error = errorFrom(() => cmd`echo "Args:" ${maliciousArgs}`);
+  
+  const actual = {
+    threw: error !== null,
+    reason: /Invalid flag name/.test(error?.message ?? ""),
+  };
+  const expected = { threw: true, reason: true };
+  assert.deepEqual(actual, expected);
 });
 
 test("sh supports multiple leading dashes for compatibility", async () => {
@@ -1412,17 +1333,6 @@ test("sh safely handles malicious array elements", async () => {
 });
 
 // Security tests - cmd with malicious object keys/values
-test("cmd rejects malicious object keys", async () => {
-  const maliciousArgs = {
-    "$(echo KEY)": "$(echo VALUE)",
-    "foo bar": "value",
-  };
-  
-  assert.throws(() => {
-    cmd`echo "Args:" ${maliciousArgs}`;
-  }, /Invalid flag name/, "Should reject malicious keys in cmd too");
-});
-
 test("cmd preserves valid flag names without transformation", async () => {
   const args = {
     someKey: "value",
@@ -3185,10 +3095,14 @@ test("a duration of Infinity means no deadline", async () => {
 test("a negative duration is rejected", async () => {
   const { Process } = await import("./index.js");
   
-  assert.throws(
+  const error = errorFrom(
     () => new Process("true", { immediate: false, timeout: -1 }),
-    TypeError,
   );
+  
+  const actual = { type: error?.constructor.name, names: /timeout/.test(
+    error?.message ?? "") };
+  const expected = { type: "TypeError", names: true };
+  assert.deepEqual(actual, expected);
 });
 
 test("interactive input is refused in synchronous mode", async () => {
@@ -3196,10 +3110,14 @@ test("interactive input is refused in synchronous mode", async () => {
   // beats pretending.
   const { sh } = await import("./index.js");
   
-  assert.throws(
-    () => sh.sync({ input: true })`cat`,
-    /synchronous/i,
-  );
+  const error = errorFrom(() => sh.sync({ input: true })`cat`);
+  
+  const actual = {
+    threw: error !== null,
+    explains: /synchronous/i.test(error?.message ?? ""),
+  };
+  const expected = { threw: true, explains: true };
+  assert.deepEqual(actual, expected);
 });
 
 test("input as a chainable accepts a configuration object", async () => {
@@ -3415,27 +3333,32 @@ test("a capture limit that is not a byte count is refused", () => {
   // unbounded capture, so a caller asking for a limit got none, while -1
   // clamped to zero, so a caller mistyping one got nothing back at all.
   const refused = [NaN, -1, 1.5, -Infinity, "64kb", "", {}, []];
+  const describes = /capture must be true, false, or a non-negative whole/;
   
-  for (const capture of refused) {
-    assert.throws(
-      () => sh({ capture })`echo hi`,
-      /capture must be true, false, or a non-negative whole number/,
-      `capture: ${JSON.stringify(capture)} should have been refused`,
-    );
-  }
+  const actual = refused.map((capture) => {
+    const error = errorFrom(() => sh({ capture })`echo hi`);
+    return {
+      type: error?.constructor.name ?? "did not throw",
+      describes: describes.test(error?.message ?? ""),
+    };
+  });
+  const expected = refused.map(() => ({ type: "TypeError",
+                                        describes: true }));
+  assert.deepEqual(actual, expected);
 });
 
 test("a capture limit is refused before the command runs", async () => {
   // The point of refusing is to say so at the call site. A limit checked
   // after the fact would have let the command run anyway.
   const marker = `/tmp/sh-cmd-tag-capture-${process.pid}`;
-  
-  assert.throws(() => sh({ capture: NaN })`touch ${marker}`);
-  
   const { existsSync } = await import("node:fs");
-  const actual = existsSync(marker);
-  const expected = false;
-  assert.equal(actual, expected, "the command ran despite a refused config");
+  
+  const error = errorFrom(() => sh({ capture: NaN })`touch ${marker}`);
+  
+  const actual = { type: error?.constructor.name, ranAnyway:
+    existsSync(marker) };
+  const expected = { type: "TypeError", ranAnyway: false };
+  assert.deepEqual(actual, expected);
 });
 
 test("the accepted capture spellings all mean what they say", async () => {
@@ -3525,16 +3448,15 @@ test("a configuration error is not a command failure, synchronously too",
       () => cmd.sync.safe({ capture: -1 })`echo hi`,
     ];
     
-    for (const attempt of attempts) {
-      assert.throws(attempt, (error) => {
-        assert.equal(error.constructor.name, "TypeError");
-        assert.notEqual(error.name, "ProcessError");
-        return true;
-      });
-    }
-    
-    // ...while a real failure is still a result, not a throw.
-    const actual = sh.sync.safe`exit 3`.ok;
-    const expected = false;
-    assert.equal(actual, expected);
+    const actual = {
+      thrown: attempts.map((attempt) => errorFrom(attempt)?.constructor.name
+        ?? "did not throw"),
+      // ...while a real failure is still a result, not a throw.
+      realFailureIsStillAResult: sh.sync.safe`exit 3`.ok,
+    };
+    const expected = {
+      thrown: ["TypeError", "TypeError", "TypeError", "TypeError"],
+      realFailureIsStillAResult: false,
+    };
+    assert.deepEqual(actual, expected);
   });
