@@ -2436,3 +2436,24 @@ test("sync still returns a ProcessResult directly", async () => {
   assert.ok(result instanceof ProcessResult);
   assert.ok(!(result instanceof Process));
 });
+
+test("commands run in the caller's working directory, not the library's",
+  async () => {
+    // Regression: getCallerDirectory() looked for the first stack frame not
+    // in "process.js", a file that has never existed here, so it always
+    // returned the library's own directory. In the repo that is invisible,
+    // because the tests run from the same directory; once installed it meant
+    // every command ran inside node_modules/sh-cmd-tag.
+    const { sh } = await import("./index.js");
+    
+    const actual = (await sh`pwd`).output.trim();
+    const expected = process.cwd();
+    assert.equal(actual, expected);
+  });
+
+test("an explicit cwd still overrides the default", async () => {
+  const { sh } = await import("./index.js");
+  
+  const actual = (await sh({ cwd: "/tmp" })`pwd`).output.trim();
+  assert.match(actual, /tmp$/);
+});

@@ -1,12 +1,25 @@
 {
-  "name": "@chriscalo/sh-cmd-tag",
+  "name": "sh-cmd-tag",
   "version": "1.0.0",
   "description": "Template tag functions for shell command execution with streaming output, safe interpolation, and flexible I/O control",
+  "license": "MIT",
+  "author": "chris.calo@gmail.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chriscalo/sh-cmd-tag.git"
+  },
+  "homepage": "https://github.com/chriscalo/sh-cmd-tag#readme",
+  "bugs": {
+    "url": "https://github.com/chriscalo/sh-cmd-tag/issues"
+  },
   "type": "module",
   "main": "index.js",
   "exports": {
     ".": "./index.js"
   },
+  "files": [
+    "index.js"
+  ],
   "scripts": {
     "test": "node --test --no-warnings *.test.js",
     "test:verbose": "DEBUG=test node --test --no-warnings *.test.js"
@@ -21,10 +34,13 @@
     "spawn",
     "child_process"
   ],
-  "author": "chris.calo@gmail.com",
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=22.0.0"
   },
+  "os": [
+    "darwin",
+    "linux"
+  ],
   "volta": {
     "node": "24.5.0"
   }

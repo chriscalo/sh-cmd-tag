@@ -88,31 +88,6 @@ function makeExecTag(useShell, isSync = false) {
 }
 
 // Get the directory of the file that called sh/cmd
-function getCallerDirectory() {
-  const originalPrepareStackTrace = Error.prepareStackTrace;
-  try {
-    Error.prepareStackTrace = (_, stack) => stack;
-    const stack = new Error().stack;
-    
-    // Find the first stack frame that's not in process.js
-    for (const frame of stack) {
-      const filename = frame.getFileName();
-      if (filename && !filename.endsWith("process.js") && 
-          filename.startsWith("file:")) {
-        return dirname(fileURLToPath(filename));
-      }
-    }
-    
-    // Fallback to process.cwd() if we can't detect the caller
-    return process.cwd();
-  } catch {
-    return process.cwd();
-  } finally {
-    Error.prepareStackTrace = originalPrepareStackTrace;
-  }
-}
-
-
 // Simple command parser that handles basic quoted arguments
 function parseCommand(command) {
   const parts = [];
@@ -489,8 +464,9 @@ function runCommand(command, useShell, isSync, options) {
   }
   
   // Determine working directory
-  const callerDir = getCallerDirectory();
-  const workingDir = options.cwd ? options.cwd : callerDir;
+  // Commands run where the caller is running, which is what every other
+  // process API in Node means by "here".
+  const workingDir = options.cwd ? options.cwd : process.cwd();
   
   // Parse command for spawn
   let cmd, args;
