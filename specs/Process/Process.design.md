@@ -107,6 +107,31 @@ Consequences, all specified rather than incidental:
 - **A consumed stream is not re-readable.** Iterating twice yields nothing the
   second time, as with any Node stream.
 
+### An unobserved stream must not stall the child
+
+Capture happens on the child's own streams, so `output` and `debug` exist
+purely for a caller who wants to watch. If nobody does, they must not fill
+up: an unread `PassThrough` stops draining at its high-water mark and
+backpressures the child, which then blocks before exiting and never settles.
+A command printing a few megabytes would hang forever — measured at 5MB on
+either stream.
+
+So an exposed stream with no consumer is drained. The check runs on the tick
+after the process starts, so a handler attached in the same tick — the
+documented pattern for a deferred process — still counts as a reader.
+`readableFlowing === null` is what distinguishes "nothing at all is
+consuming" from both a `data` listener and an async iterator.
+
+The same rule applies to a pipeline whose last stage is a transform: nothing
+reads its output, so awaiting the chain would wait on a stream that never
+finishes.
+
+### Ending iteration is not a reason to stop a process
+
+A command may close stdout and keep working. Iteration ending means the loop
+has nothing left to yield, not that the process should die, so only
+abandonment — leaving the loop early — stops it.
+
 `Process` deliberately does **not** `extend Readable`. Inheriting Node's
 `pipe`, whose contract is to return its destination, would reintroduce the
 alternating return type that [Pipelines](#pipelines) exists to remove.
@@ -282,6 +307,10 @@ class Process {
   the same failure. 127 does appear, but from the shell rather than from us —
   when `shell: true`, the shell reports "command not found" as exit 127 and
   never raises an `error` event at all.
+
+- A timeout is a failure even when the child exits cleanly. Well-behaved
+  programs handle termination and exit `0`, so exit status alone cannot tell
+  a command that finished from one that ran out of time.
 
 - A nonzero exit produces the message `Command failed with exit code N`, with
   the child's trimmed stderr appended after a colon when there is any. That
