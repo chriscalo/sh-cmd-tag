@@ -303,17 +303,73 @@ Two keys are new, both belonging to the stop/timeout vocabulary:
 - **`timeout`** — milliseconds. Stop the process after this long. No default,
   matching Node.
 - **`killAfter`** — milliseconds, default `5000`. How long a polite stop is
-  given before it escalates to an unrefusable kill.
-
-`killAfter` is named for what happens rather than for the interval itself: a
-reader sees "kill after 5000" and knows both the action and when. It carries
-no unit suffix because `timeout` does not either — both are milliseconds,
-stated once here, matching Node. The same key tunes an explicit stop:
+  given before it escalates to an unrefusable kill. `false` disables
+  escalation entirely; `0` kills immediately with no grace.
 
 ```javascript
-await sh({ timeout: 30_000 })`npm test`;   // 30s, then stop, then kill
-await proc.stop({ killAfter: 2_000 });     // be less patient this once
+await sh({ timeout: 30_000 })`npm test`;      // deadline, then stop, then kill
+await proc.stop({ killAfter: 2_000 });        // less patient, this once
+await proc.stop({ killAfter: false });        // ask, then wait indefinitely
 ```
+
+### Designing these two keys
+
+The alternatives considered, and why these won.
+
+**Units: milliseconds, not duration strings.** `"30s"` reads better than
+`30_000` but needs a parser and a documented grammar — is `"1m30s"` legal? is
+`"30 seconds"`? — which is new surface and a new class of error for a
+readability gain that numeric separators mostly deliver anyway. Node uses
+milliseconds throughout, including `exec`'s own `timeout`. systemd accepts
+`"5s"`, but systemd is a config file format rather than a JS API. The unit is
+stated once here instead of being suffixed onto every key.
+
+**Shape: flat, not nested.** `timeout: { after, killAfter }` groups the
+related keys, but the common case by a wide margin is "just give me a
+deadline", and nesting turns that into `timeout: { after: 30_000 }`. Tidying
+the rare case at the expense of the common one is the wrong trade.
+
+**Name: `killAfter`.** `graceMs` carries a unit suffix `timeout` does not, so
+one object would mix two conventions. `grace` alone is vague — grace for what,
+to do what? `gracePeriod` is accurate but names the waiting rather than the
+consequence. `forceAfter` is close, but introduces "force" as vocabulary used
+nowhere else. `killAfter` names both the action and its timing, and `kill()`
+is already the method it triggers — learning the config teaches the method.
+
+**Disabling escalation matters.** A database flushing to disk should not be
+killed five seconds into a shutdown it is performing correctly. `killAfter:
+false` reads as "kill after: never" and does that; `killAfter: 0` reads as
+"kill after: no delay" and does that. Both fall out of the name rather than
+needing a separate flag.
+
+**One key, two scopes.** The same name works as an instance default in config
+and as a per-call override in `stop({ killAfter })`, so there is no second
+vocabulary for the same idea.
+
+**The clock starts when the process starts**, not when it is constructed.
+With `immediate: false` a process can sit unstarted indefinitely, and a
+deadline measured from construction could expire before anything ran.
+
+**A timeout is reported with `timedOut: true` on `ProcessError`.** The
+alternatives were worse: `ProcessError.code` already holds the numeric exit
+code, so putting `"ETIMEDOUT"` there would overload one field with two types,
+and a `TimeoutError` subclass forces `instanceof` checks on callers who want a
+boolean. A flag alongside the existing fields costs nothing and reads
+directly.
+
+**`AbortSignal` is declined for now.** Node's `spawn` accepts `{ signal }`,
+and `AbortSignal.timeout(ms)` is the platform's own expression of this idea,
+so it is a real candidate. Two things rule it out here. The option name
+`signal` collides head-on with POSIX signals in a library about processes —
+precisely the vocabulary this design works to keep out of the caller's way.
+And `abort` means immediate termination, which contradicts the graceful-stop
+default rather than composing with it. If it is added later, it wants a name
+like `abortWith` that dodges the collision; recording that here means the
+collision is noticed rather than rediscovered.
+
+**An idle timeout is out of scope.** "No output for N seconds" is a genuine
+feature, common in CI runners, but it is a different one — it measures silence
+rather than duration — and nothing here needs it.
 
 `sync` is not a `Process` option. Synchronous execution bypasses this class
 entirely — see below.
@@ -578,24 +634,26 @@ issue rather than in a checklist file.
 56. `stop()` escalates to an unrefusable kill after `killAfter` if the
     process ignores the polite request.
 57. `stop({ killAfter })` overrides the escalation delay for one call.
-58. `kill()` terminates immediately and unrefusably.
-59. `interrupt()` delivers the equivalent of Ctrl-C.
-60. Stopping an already-exited process is a no-op, not a throw.
-61. Stopping a pipeline stops every stage.
-62. `timeout` stops a process at the deadline and rejects a `ProcessError`
-    with `timedOut: true`.
-63. A timed-out rejection carries the output captured before the stop.
-64. Under `throw: false`, a timeout resolves `ok: false` with
+58. `killAfter: false` waits indefinitely; `killAfter: 0` kills at once.
+59. `kill()` terminates immediately and unrefusably.
+60. `interrupt()` delivers the equivalent of Ctrl-C.
+61. Stopping an already-exited process is a no-op, not a throw.
+62. Stopping a pipeline stops every stage.
+63. `timeout` stops a process at the deadline and rejects a `ProcessError`
+    with `timedOut: true`, leaving `.code` as the exit code.
+64. The timeout clock starts when the process starts, not when constructed.
+65. A timed-out rejection carries the output captured before the stop.
+66. Under `throw: false`, a timeout resolves `ok: false` with
     `.error.timedOut`.
-65. `.sync` honours `timeout`, enforcing the deadline unrefusably and setting
+67. `.sync` honours `timeout`, enforcing the deadline unrefusably and setting
     `timedOut`.
 
 **Live mode and colour**
 
-66. `.live` forwards stdout and stderr while still capturing both.
-67. `.live` does not inherit stdin.
-68. `.live` composes with the other chainables.
-69. `color: true` sets `FORCE_COLOR` in the child environment.
-70. `color: false` sets `NO_COLOR` in the child environment.
-71. `color` unset adds neither variable, and no state ever sets both.
-72. Captured output retains escape codes when colour was forced on.
+68. `.live` forwards stdout and stderr while still capturing both.
+69. `.live` does not inherit stdin.
+70. `.live` composes with the other chainables.
+71. `color: true` sets `FORCE_COLOR` in the child environment.
+72. `color: false` sets `NO_COLOR` in the child environment.
+73. `color` unset adds neither variable, and no state ever sets both.
+74. Captured output retains escape codes when colour was forced on.
