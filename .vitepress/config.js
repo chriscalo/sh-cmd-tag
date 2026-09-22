@@ -8,11 +8,10 @@ process.env.VITE_EXTRA_EXTENSIONS ??= "html";
 
 import { defineConfig } from "vitepress";
 import { globSync } from "glob";
-// FIXME: gray-matter pulls in js-yaml 3.x, which carries a moderate advisory
+// gray-matter pulls in js-yaml 3.x, which carries a moderate advisory
 // (GHSA-h67p-54hq-rp68: quadratic-complexity DoS via repeated merge-key
-// aliases). The risk here is minimal: frontmatter is parsed at build time from
-// maintainer-authored files, never untrusted input. Watch for a maintained
-// gray-matter or a replacement parser and revisit then.
+// aliases). Frontmatter is parsed at build time from maintainer-authored files,
+// never untrusted input.
 import matter from "gray-matter";
 import {
   readFileSync, writeFileSync, existsSync,
