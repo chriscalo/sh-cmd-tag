@@ -2166,10 +2166,26 @@ test("color false sets NO_COLOR in the child", async () => {
 
 test("color unset adds neither variable", async () => {
   const { sh } = await import("./index.js");
+  // The parent's own variables are inherited by design, so they have to be
+  // cleared here: otherwise this measures the environment the suite happens
+  // to run in rather than what the library adds.
+  const previous = {
+    FORCE_COLOR: process.env.FORCE_COLOR,
+    NO_COLOR: process.env.NO_COLOR,
+  };
+  delete process.env.FORCE_COLOR;
+  delete process.env.NO_COLOR;
   
-  const actual = (await sh`echo "$FORCE_COLOR|$NO_COLOR"`).output.trim();
-  const expected = "|";
-  assert.equal(actual, expected);
+  try {
+    const actual = (await sh`echo "$FORCE_COLOR|$NO_COLOR"`).output.trim();
+    const expected = "|";
+    assert.equal(actual, expected);
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
 });
 
 // --- iteration -------------------------------------------------------------
@@ -2577,4 +2593,124 @@ test("color false clears an inherited FORCE_COLOR", async () => {
     if (previous === undefined) delete process.env.FORCE_COLOR;
     else process.env.FORCE_COLOR = previous;
   }
+});
+
+// --- findings from automated review ----------------------------------------
+
+test("a command producing megabytes of stdout still settles", async () => {
+  // An unread PassThrough stops draining at its high-water mark and
+  // backpressures the child, which then blocks before exiting. Awaiting
+  // without consuming the stream used to hang forever.
+  const { sh } = await import("./index.js");
+  const { writeFileSync, unlinkSync } = await import("node:fs");
+  const script = `/tmp/sh-cmd-tag-big-${process.pid}.js`;
+  writeFileSync(script, 'process.stdout.write("x".repeat(5_000_000));');
+  
+  try {
+    const actual = (await sh`node ${script}`).output.length;
+    const expected = 5_000_000;
+    assert.equal(actual, expected);
+  } finally {
+    try { unlinkSync(script); } catch {}
+  }
+});
+
+test("a command producing megabytes of stderr still settles", async () => {
+  const { sh } = await import("./index.js");
+  const { writeFileSync, unlinkSync } = await import("node:fs");
+  const script = `/tmp/sh-cmd-tag-bigerr-${process.pid}.js`;
+  writeFileSync(script, 'process.stderr.write("y".repeat(5_000_000));');
+  
+  try {
+    const actual = (await sh`node ${script}`).debug.length;
+    const expected = 5_000_000;
+    assert.equal(actual, expected);
+  } finally {
+    try { unlinkSync(script); } catch {}
+  }
+});
+
+test("ending iteration naturally does not stop a healthy process",
+  async () => {
+    // A command may close stdout and keep working. Iteration ending is not
+    // a reason to terminate it.
+    const { sh } = await import("./index.js");
+    const { writeFileSync, unlinkSync } = await import("node:fs");
+    const script = `/tmp/sh-cmd-tag-eof-${process.pid}.js`;
+    writeFileSync(
+      script,
+      'process.stdout.write("early\\n"); process.stdout.end();' +
+      'setTimeout(() => process.exit(0), 400);',
+    );
+    
+    try {
+      const proc = sh`node ${script}`;
+      for await (const chunk of proc) {
+        assert.ok(chunk);
+      }
+      const result = await proc;
+      
+      assert.ok(result.ok);
+    } finally {
+      try { unlinkSync(script); } catch {}
+    }
+  });
+
+test("a timeout is a failure even when the child exits cleanly", async () => {
+  // A well-behaved child handles termination and exits 0, so exit status
+  // alone cannot tell a finished command from one that ran out of time.
+  const { sh } = await import("./index.js");
+  const { writeFileSync, unlinkSync } = await import("node:fs");
+  const script = `/tmp/sh-cmd-tag-coop-${process.pid}.js`;
+  writeFileSync(
+    script,
+    'process.on("SIGTERM", () => process.exit(0)); setInterval(() => {}, 1000);',
+  );
+  
+  try {
+    await assert.rejects(
+      async () => { await sh({ timeout: "300ms" })`node ${script}`; },
+      (error) => {
+        assert.equal(error.timedOut, true);
+        return true;
+      },
+    );
+  } finally {
+    try { unlinkSync(script); } catch {}
+  }
+});
+
+test("awaiting a chain that ends in a transform settles", async () => {
+  const { sh } = await import("./index.js");
+  const { createGzip } = await import("node:zlib");
+  
+  const result = await sh`printf "hi"`.pipe(createGzip());
+  
+  assert.ok(result.ok);
+});
+
+test("a safe pipeline still reports which stage failed", async () => {
+  // Safe stages resolve a failed result rather than rejecting, so they skip
+  // the rejection path that records the stage.
+  const { sh } = await import("./index.js");
+  
+  const result = await sh.safe`cat /nonexistent/path`.pipe`wc -l`;
+  
+  assert.equal(result.ok, false);
+  assert.equal(result.error.stage, 0);
+  assert.match(result.error.command, /nonexistent/);
+});
+
+test("a reused abort signal does not accumulate listeners", async () => {
+  const { sh } = await import("./index.js");
+  const { getEventListeners } = await import("node:events");
+  const controller = new AbortController();
+  
+  for (let index = 0; index < 20; index++) {
+    await sh({ signal: controller.signal })`true`;
+  }
+  
+  const actual = getEventListeners(controller.signal, "abort").length;
+  const expected = 0;
+  assert.equal(actual, expected);
 });

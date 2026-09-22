@@ -783,6 +783,7 @@ class Process {
   #outputChunks = [];
   #debugChunks = [];
   #inheritedStdin = false;
+  #abortListener;
   
   /**
    * Creates a new Process instance.
@@ -926,6 +927,7 @@ class Process {
     this.#bridgeStreams();
     this.#connectInput();
     this.#connectAbortSignal();
+    this.#drainIfUnobserved();
     this.#settleOn(this.#childProcess);
     this.#armTimeout();
   }
@@ -956,6 +958,27 @@ class Process {
     }
   }
   
+  #drainIfUnobserved() {
+    // Capture happens on the child's own streams, so the exposed ones exist
+    // purely for a caller who wants to watch. If nobody does, they must not
+    // fill up: an unread PassThrough stops draining at its high-water mark
+    // and backpressures the child, which then blocks before exiting and
+    // never settles. A command printing a few megabytes would hang forever.
+    //
+    // Checked on the next tick so that a handler attached in this one — the
+    // documented pattern for a deferred process — still counts as a reader.
+    // readableFlowing is null only while nothing at all is consuming: a
+    // "data" listener or a pipe makes it true, and async iteration makes it
+    // false.
+    process.nextTick(() => {
+      for (const stream of [this.#io.output, this.#io.debug]) {
+        if (stream.readableFlowing === null) {
+          stream.resume();
+        }
+      }
+    });
+  }
+  
   #connectAbortSignal() {
     const { signal } = this.#config;
     if (!signal) {
@@ -967,7 +990,12 @@ class Process {
       this.kill();
       return;
     }
-    signal.addEventListener("abort", () => this.kill(), { once: true });
+    // Held so it can be removed once the process settles. A long-lived
+    // signal reused across many short commands would otherwise accumulate a
+    // listener per command, each retaining a finished Process along with its
+    // streams and captured output.
+    this.#abortListener = () => this.kill();
+    signal.addEventListener("abort", this.#abortListener, { once: true });
   }
   
   #connectInput() {
@@ -997,6 +1025,11 @@ class Process {
       
       // An inherited stdin holds the event loop open long after the child is
       // gone, so release it the moment the process settles.
+      if (this.#abortListener) {
+        this.#config.signal?.removeEventListener("abort", this.#abortListener);
+        this.#abortListener = undefined;
+      }
+      
       if (this.#inheritedStdin) {
         process.stdin.unpipe(this.#io.input);
         process.stdin.pause();
@@ -1031,7 +1064,9 @@ class Process {
     });
     
     child.on("close", (code, signal) => {
-      if (code === 0) {
+      // A well-behaved child handles termination and exits 0, so exit status
+      // alone cannot tell a completed command from one that ran out of time.
+      if (code === 0 && !this.#timedOut) {
         finish(null);
         return;
       }
@@ -1176,13 +1211,17 @@ class Process {
    */
   async *[Symbol.asyncIterator]() {
     this.start();
+    let reachedEnd = false;
     try {
       for await (const chunk of this.#io.output) {
         yield chunk;
       }
+      reachedEnd = true;
     } finally {
-      // Abandoning the loop early must not leave the child running.
-      if (!this.#settled) {
+      // Only abandonment stops the process. A command may close stdout and
+      // keep working, and ending iteration is not a reason to terminate a
+      // healthy process — the loop simply has nothing left to yield.
+      if (!reachedEnd && !this.#settled) {
         await this.stop();
       }
     }
@@ -1297,6 +1336,16 @@ class Pipeline {
    * short-circuits, carrying which stage failed.
    */
   async #settle() {
+    // A tail nobody reads never finishes, so awaiting a chain that ends in a
+    // transform would hang. Same rule as a process's own streams: if nothing
+    // is consuming, drain rather than accumulate.
+    const tail = this.#tailOutput;
+    if (tail && !(this.#tail instanceof Process)
+        && typeof tail.resume === "function"
+        && tail.readableFlowing === null) {
+      tail.resume();
+    }
+    
     // Indexed by stage, so a failure can say which stage failed whether it
     // was a process or a stream.
     const outcomes = await Promise.all(this.#stages.map(async (stage, index) => {
@@ -1321,11 +1370,21 @@ class Pipeline {
       throw error;
     }
     
-    const results = outcomes
-      .filter((outcome) => outcome.result)
-      .map((outcome) => outcome.result);
-    const unsuccessful = results.find((result) => result.ok === false);
-    return unsuccessful ?? results[results.length - 1];
+    const withResults = outcomes.filter((outcome) => outcome.result);
+    const unsuccessful = withResults.find((outcome) => !outcome.result.ok);
+    if (unsuccessful) {
+      // Safe stages resolve a failed result rather than rejecting, so they
+      // never pass through the branch above — without this, a safe pipeline
+      // reports that something failed but not what.
+      const { error } = unsuccessful.result;
+      if (error) {
+        error.stage = unsuccessful.index;
+        error.command = unsuccessful.stage.command;
+      }
+      return unsuccessful.result;
+    }
+    const results = withResults.map((outcome) => outcome.result);
+    return results[results.length - 1];
   }
   
   then(onFulfilled, onRejected) {
