@@ -39,8 +39,14 @@ sets `NO_COLOR`; unset leaves the child's environment alone. Exactly one is
 ever set.
 
 **Environment.** Commands run in the caller's working directory unless `cwd`
-says otherwise, and the library selects its own shell — `bash` where
-available — so the same command behaves the same way on macOS and Linux.
+says otherwise. Left to itself the library picks a shell — `bash` where
+available — so the same command behaves the same way on macOS and Linux;
+`shell` accepts a string for a caller who wants zsh, dash, or a particular
+path, and `false` to execute directly.
+
+**Captured output is bounded** by what a JavaScript string can hold, and the
+result carries `truncated` once anything is dropped, so an endless producer
+cannot grow the buffer past the point where the result could be built.
 
 **Requirements.** Node 22 or newer, macOS or Linux, zero dependencies.
 Windows is not supported: the escaping is POSIX-specific.
