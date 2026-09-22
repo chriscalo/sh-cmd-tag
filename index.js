@@ -725,16 +725,18 @@ function toMilliseconds(value, key) {
  */
 function buildEnvironment(config) {
   const env = { ...process.env, ...config.env };
-  delete env.FORCE_COLOR;
-  delete env.NO_COLOR;
+  
+  // `color` decides only when it is set. Left unset, the child inherits
+  // whatever the caller's environment and `env` say, which may be neither,
+  // either, or — not our doing — both.
   if (config.color === true) {
+    delete env.NO_COLOR;
     env.FORCE_COLOR = "1";
   } else if (config.color === false) {
+    delete env.FORCE_COLOR;
     env.NO_COLOR = "1";
-  } else {
-    if ("FORCE_COLOR" in process.env) env.FORCE_COLOR = process.env.FORCE_COLOR;
-    if ("NO_COLOR" in process.env) env.NO_COLOR = process.env.NO_COLOR;
   }
+  
   return env;
 }
 

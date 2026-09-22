@@ -2505,3 +2505,44 @@ test("sync safe mode resolves a timeout instead of throwing", async () => {
   assert.equal(result.ok, false);
   assert.equal(result.error.timedOut, true);
 });
+
+test("env can override the colour variables when color is unset", async () => {
+  const { sh } = await import("./index.js");
+  
+  const actual = (await sh({ env: { FORCE_COLOR: "3" } })`echo "$FORCE_COLOR"`)
+    .output.trim();
+  const expected = "3";
+  assert.equal(actual, expected);
+});
+
+test("color true clears an inherited NO_COLOR", async () => {
+  const { sh } = await import("./index.js");
+  const previous = process.env.NO_COLOR;
+  process.env.NO_COLOR = "1";
+  
+  try {
+    const actual =
+      (await sh({ color: true })`echo "$FORCE_COLOR|$NO_COLOR"`).output.trim();
+    const expected = "1|";
+    assert.equal(actual, expected);
+  } finally {
+    if (previous === undefined) delete process.env.NO_COLOR;
+    else process.env.NO_COLOR = previous;
+  }
+});
+
+test("color false clears an inherited FORCE_COLOR", async () => {
+  const { sh } = await import("./index.js");
+  const previous = process.env.FORCE_COLOR;
+  process.env.FORCE_COLOR = "1";
+  
+  try {
+    const actual =
+      (await sh({ color: false })`echo "$FORCE_COLOR|$NO_COLOR"`).output.trim();
+    const expected = "|1";
+    assert.equal(actual, expected);
+  } finally {
+    if (previous === undefined) delete process.env.FORCE_COLOR;
+    else process.env.FORCE_COLOR = previous;
+  }
+});
