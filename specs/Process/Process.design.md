@@ -80,6 +80,91 @@ Input written before start sits in the `PassThrough` buffer and flushes when
 the pipe to `child.stdin` opens. Output and debug stay silent until a child
 exists, because nothing writes into them until then.
 
+### OPEN QUESTION: who closes stdin, and when
+
+This is unresolved. It is written down rather than decided because the
+decision changes the class surface, and the surface is cheap to change only
+until the package is published.
+
+**What happens now.** `input` is a `PassThrough` piped to `child.stdin`. If
+nothing ends it, the child's stdin never reaches EOF. A command that reads
+stdin therefore waits forever. Measured:
+
+| case | today |
+| --- | --- |
+| command never reads stdin — `git status`, `ls` | settles |
+| command reads stdin, nothing given — `sort`, `grep TODO` | **waits forever** |
+| `input` given as a string or stream | settles |
+| written to `proc.input` and `end()` called | settles |
+| written to `proc.input`, `end()` forgotten | **waits forever** |
+| pipeline stage, fed upstream | settles |
+| `input: false` | **waits forever** — the value does nothing today |
+
+Two of those wait, and they are different mistakes: in the first nothing was
+ever written to `input`, in the second something was written and never
+closed. Neither produces any output, so from outside the program simply
+stops.
+
+**Why it happens.** Not because of the default. Because `input` exists
+unconditionally. A stream the caller may write to at any moment cannot be
+closed on their behalf, because "will write later" and "will never write"
+are the same observation at `start()`.
+
+**What other libraries do.** Measured, not recalled:
+
+| library | stdin left unspecified | can you write without declaring it? |
+| --- | --- | --- |
+| Go `exec.Cmd` | `os.DevNull` — settles | no — `StdinPipe()` or set `Stdin` |
+| Ruby `Open3.capture2` | pipe closed at once — settles | no — hands back no stream; `popen3` is a different call |
+| Python `subprocess.run` | inherits the parent's — settles under `< /dev/null` | no — `p.stdin is None` unless `stdin=PIPE` |
+| Node `child_process` | pipe left open — waits forever | yes — `child.stdin` is always there |
+| this library | pipe left open — waits forever | yes — `proc.input` is always there |
+
+The column that matters is the second one. Every library that settles by
+default also refuses to hand out a stdin stream unless asked. They are not
+two independent choices; they are one: no stream means nobody can write,
+which is what makes closing safe. Node hands out the stream and therefore
+cannot close it, and this library inherited that shape without inheriting
+the reason — Node is plumbing, where managing the pipe is the caller's job
+by construction.
+
+So the question is not "what should the default be". It is **should writing
+to stdin require saying so first.**
+
+**The options, and what each costs.**
+
+*A. Keep it as it is.* The stream is always there and the caller owns its
+lifetime, EOF included. Coherent, and familiar to anyone thinking in Node
+streams. Costs two silent hangs, one of which — forgetting a file argument —
+is a typo rather than a misunderstanding.
+
+*B. Declare to write.* `input` exists only when the caller asks for it; with
+nothing asked for, the child gets EOF. Coherent for the reason the table
+shows: no stream, so nothing to leave open. Matches Go, Ruby, and Python.
+Costs the progressive-write form on a plain tag — it would need a
+declaration — and adds a configuration value. It is a breaking change to
+documented behaviour, which is free exactly once, before publication.
+
+*C. Inherit the parent's stdin.* Python's default, and what typing the
+command into a terminal does. Rejected: `interactive` already means this,
+so it would make the plain form interactive by default, and a command
+running in the background would compete for the terminal's input.
+
+*D. Keep A, and make the two waits sayable and visible.* `input: false`
+comes to mean EOF, so "this command gets no input" is one word rather than
+the `sh.input("")` trick. The two waiting states are distinguishable from
+inside — written-to versus never-written — so they can be reported rather
+than guessed at. Additive, breaks nothing, and does not remove the wait.
+
+**How to judge them.** Least surprise, measured against what the caller
+already believes: a reader who thinks "this is a subprocess I am capturing"
+expects Go and Ruby's answer; a reader who thinks "this is a Node stream I
+hold" expects A. This library has already split those two readings — the
+terminal reading is `interactive` — which is an argument that the plain form
+should take the capture reading. Against that: whether a mistake can be
+silent, and whether the failure is the kind a caller can diagnose without
+reading the source.
+
 ### A `Process` is a source of its own output
 
 `Process` implements `Symbol.asyncIterator`, yielding stdout chunks:
