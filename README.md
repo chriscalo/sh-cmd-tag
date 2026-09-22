@@ -282,7 +282,7 @@ Any of these can be passed to `sh({ ... })` or `cmd({ ... })`:
 | `shell`       | `true`  | Run through a shell                          |
 | `output`      | `false` | Stream stdout to your terminal as it arrives |
 | `debug`       | `false` | Stream stderr to your terminal as it arrives |
-| `input`       | —       | `true` inherits your stdin; a string or stream is written to the child |
+| `input`       | —       | `true` inherits your stdin; a string or stream is written |
 | `throw`       | `true`  | Reject on failure, or resolve with `.error`  |
 | `color`       | —       | Force colour on or off in the child          |
 | `timeout`     | —       | Stop the process after this long             |

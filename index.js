@@ -1139,7 +1139,8 @@ class Process {
   finally(onFinally) {
     return this.then(
       (value) => Promise.resolve(onFinally()).then(() => value),
-      (reason) => Promise.resolve(onFinally()).then(() => Promise.reject(reason)),
+      (reason) => Promise.resolve(onFinally())
+        .then(() => Promise.reject(reason)),
     );
   }
   
@@ -1286,7 +1287,8 @@ class Pipeline {
   finally(onFinally) {
     return this.then(
       (value) => Promise.resolve(onFinally()).then(() => value),
-      (reason) => Promise.resolve(onFinally()).then(() => Promise.reject(reason)),
+      (reason) => Promise.resolve(onFinally())
+        .then(() => Promise.reject(reason)),
     );
   }
   

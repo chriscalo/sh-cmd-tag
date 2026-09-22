@@ -768,9 +768,11 @@ hand-written command is wise.
 
 ### Design Principle: Escape at Source
 
-Shell interpolation follows a simple rule: **Every interpolation site produces shell-safe output.**
+Shell interpolation follows a simple rule: **Every interpolation site produces
+shell-safe output.**
 
-This means escaping happens at the point where values are converted for shell use, not after composite strings are formed.
+This means escaping happens at the point where values are converted for shell
+use, not after composite strings are formed.
 
 ### Safe String System
 
@@ -813,13 +815,14 @@ function shellEscape(value) {
 
 **Design decisions:**
 - **Always use single quotes**: Simpler than mixed quoting strategies
-- **No "safe character" optimization**: Consistent escaping eliminates edge cases  
+- **No "safe character" optimization**: Consistent escaping eliminates edge
+  cases
 - **Handle already-safe strings**: Prevents double-escaping
 - **Convert all inputs to string**: Works with any JavaScript value
 
 ### Object and Array Interpolation
 
-Objects and arrays can be interpolated directly in template literals to generate 
+Objects and arrays can be interpolated directly in template literals to generate
 command-line arguments. This enables clean, programmatic command construction.
 
 #### Object Arguments as Named Flags
@@ -916,7 +919,8 @@ Objects and arrays require special handling with escape-at-source architecture:
 
 #### Object to CLI Flags with Validation
 
-Objects are converted to CLI flags using a secure validation strategy that preserves original flag names:
+Objects are converted to CLI flags using a secure validation strategy that
+preserves original flag names:
 
 ```js
 function objectToCLIFlags(obj) {
@@ -968,7 +972,8 @@ function formatFlagName(key) {
 - **Reject dangerous keys** instead of trying to escape them
 - **Fail-fast validation** prevents command injection at the source
 - **Clear error messages** help developers understand valid flag patterns
-- **No automatic transformations** - preserves exact flag names for CLI compatibility
+- **No automatic transformations** - preserves exact flag names for CLI
+  compatibility
 
 **Valid Flag Patterns:**
 ```javascript
@@ -1003,11 +1008,17 @@ function formatFlagName(key) {
 ```
 
 **Design Rationale:**
-- **Maximum CLI Compatibility**: Supports any number of leading dashes to accommodate legacy/enterprise tools with unusual conventions
-- **Predictable Output**: Users get exactly what they specify in their object keys, including exact dash count
-- **User Control**: Developers can choose their own naming conventions (`someKey`, `some_key`, `SOME_KEY`) and dash patterns (`-v`, `--verbose`, `---legacy`)
-- **Security**: Validation prevents dangerous inputs while preserving all valid flag patterns
-- **Future-Proof**: Won't break existing tools regardless of their dash conventions
+- **Maximum CLI Compatibility**: Supports any number of leading dashes to
+  accommodate legacy/enterprise tools with unusual conventions
+- **Predictable Output**: Users get exactly what they specify in their object
+  keys, including exact dash count
+- **User Control**: Developers can choose their own naming conventions
+  (`someKey`, `some_key`, `SOME_KEY`) and dash patterns (`-v`, `--verbose`,
+  `---legacy`)
+- **Security**: Validation prevents dangerous inputs while preserving all valid
+  flag patterns
+- **Future-Proof**: Won't break existing tools regardless of their dash
+  conventions
 
 #### Array to Arguments Implementation
 
@@ -1032,13 +1043,15 @@ function arrayToArgs(arr) {
 
 **Security by Design**
 - Every interpolation point explicitly handles shell safety
-- **Validation-first approach**: Reject dangerous inputs instead of trying to escape them
+- **Validation-first approach**: Reject dangerous inputs instead of trying to
+  escape them
 - Intentional escaping at the source of each value
 - **Fail-fast validation**: Errors thrown immediately on invalid flag names
 
 **Simplicity**
 - Single, consistent escaping strategy for values
-- **Clear validation rules**: Only valid JavaScript identifiers allowed as flag names
+- **Clear validation rules**: Only valid JavaScript identifiers allowed as flag
+  names
 - No complex quote detection logic
 - Predictable behavior across all input types
 
@@ -1046,7 +1059,8 @@ function arrayToArgs(arr) {
 - Safe strings can be combined without losing safety
 - No double-escaping issues
 - Clear ownership of escaping responsibility
-- **No automatic transformations**: Preserves exact flag names for maximum compatibility
+- **No automatic transformations**: Preserves exact flag names for maximum
+  compatibility
 
 **Auditability**
 - Easy to verify what has been escaped
@@ -1058,31 +1072,46 @@ function arrayToArgs(arr) {
 
 1. **Safe string infrastructure**: Symbol-based marking system
 2. **Unified escaping function**: Single-quote strategy for all values  
-3. **Flag name validation**: Strict validation of object keys without transformation
-4. **Preserve original flag names**: No automatic camelCase conversion for CLI compatibility
-5. **Escape-at-source**: Object keys, values, and array elements escaped individually
+3. **Flag name validation**: Strict validation of object keys without
+transformation
+4. **Preserve original flag names**: No automatic camelCase conversion for CLI
+compatibility
+5. **Escape-at-source**: Object keys, values, and array elements escaped
+individually
 6. **Composition safety**: Safe strings preserve safety when combined
 7. **Type safety**: Only strings can be marked as shell-safe
 
-This architecture makes shell escaping **explicit, predictable, and secure by design**.
+This architecture makes shell escaping **explicit, predictable, and secure by
+design**.
 
 ### Security Design Philosophy
 
-The flag name validation system follows a **validation-first approach** that prioritizes security and CLI compatibility:
+The flag name validation system follows a **validation-first approach** that
+prioritizes security and CLI compatibility:
 
-1. **Strict Validation**: Only valid JavaScript identifiers are allowed as flag names
-2. **No Automatic Transformation**: Original flag names are preserved exactly as specified  
-3. **Security by Rejection**: Dangerous inputs are rejected with clear error messages rather than attempting to escape them
-4. **CLI Compatibility**: Any valid identifier naming convention is supported without forced transformation
-5. **Comprehensive Testing**: Security tests verify safe behavior with preserved flag names
+1. **Strict Validation**: Only valid JavaScript identifiers are allowed as flag
+   names
+2. **No Automatic Transformation**: Original flag names are preserved exactly as
+specified
+3. **Security by Rejection**: Dangerous inputs are rejected with clear error
+messages rather than attempting to escape them
+4. **CLI Compatibility**: Any valid identifier naming convention is supported
+without forced transformation
+5. **Comprehensive Testing**: Security tests verify safe behavior with preserved
+flag names
 
-**Security Benefits**: Eliminates command injection vulnerabilities by rejecting dangerous inputs at the source rather than trying to escape them.
+**Security Benefits**: Eliminates command injection vulnerabilities by rejecting
+dangerous inputs at the source rather than trying to escape them.
 
-**Compatibility Benefits**: Preserves CLI compatibility by not forcing naming conventions - users can use `someKey`, `some_key`, `SOME_KEY`, or any valid identifier pattern.
+**Compatibility Benefits**: Preserves CLI compatibility by not forcing naming
+conventions - users can use `someKey`, `some_key`, `SOME_KEY`, or any valid
+identifier pattern.
 
 **Template Literal Security Requirements:**
 
-The shell execution system must properly escape template literal values to prevent injection vulnerabilities. A naive implementation using only `String.raw()` would be vulnerable:
+The shell execution system must properly escape template literal values to
+prevent injection vulnerabilities. A naive implementation using only
+`String.raw()` would be vulnerable:
 
 ```javascript
 // UNSAFE - do not implement this way:
