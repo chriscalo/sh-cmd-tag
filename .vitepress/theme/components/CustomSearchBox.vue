@@ -136,6 +136,19 @@
     return `<p>${escapeHtml(slice)}</p>`;
   }
   
+  // Builds the highlight pattern mark.js applies to the rendered
+  // excerpts. Longest terms first, so an overlapping shorter term can't
+  // win and leave the rest of a longer match unhighlighted.
+  function formMarkRegex(terms) {
+    return new RegExp(
+      [...terms]
+        .sort((left, right) => right.length - left.length)
+        .map((term) => `(${escapeRegExp(term)})`)
+        .join("|"),
+      "gi",
+    );
+  }
+  
   watchDebounced(
     () => [searchIndex.value, filterText.value],
     async ([index, filterTextValue], old, onCleanup) => {
@@ -320,16 +333,6 @@
     nextTick().then(() => focusSearchInput(false));
   }
   
-  function formMarkRegex(terms) {
-    return new RegExp(
-      [...terms]
-        .sort((left, right) => right.length - left.length)
-        .map((term) => `(${escapeRegExp(term)})`)
-        .join("|"),
-      "gi",
-    );
-  }
-  
   function onMouseMove(event) {
     if (!disableMouseOver.value) return;
     const resultEl = event.target
@@ -347,13 +350,13 @@
     <div
       ref="rootEl"
       role="button"
-      :aria-owns="results?.length ? 'localsearch-list' : undefined"
+      :aria-owns="results?.length ? `localsearch-list` : undefined"
       aria-expanded="true"
       aria-haspopup="listbox"
       aria-labelledby="localsearch-label"
       class="VPLocalSearchBox"
     >
-      <div class="backdrop" @click="$emit('close')" />
+      <div class="backdrop" @click="$emit(`close`)" />
 
       <div class="shell">
         <form
@@ -362,7 +365,7 @@
           @submit.prevent=""
         >
           <label
-            :title="translate('button.buttonText')"
+            :title="translate(`button.buttonText`)"
             id="localsearch-label"
             for="localsearch-input"
           >
@@ -374,8 +377,8 @@
           <div class="search-actions before">
             <button
               class="back-button"
-              :title="translate('modal.backButtonTitle')"
-              @click="$emit('close')"
+              :title="translate(`modal.backButtonTitle`)"
+              @click="$emit(`close`)"
             >
               <span class="vpi-arrow-left local-search-icon" />
             </button>
@@ -385,11 +388,11 @@
             v-model="filterText"
             :aria-activedescendant="
               selectedIndex > -1
-                ? 'localsearch-item-' + selectedIndex
+                ? `localsearch-item-${selectedIndex}`
                 : undefined
             "
             aria-autocomplete="both"
-            :aria-controls="results?.length ? 'localsearch-list' : undefined"
+            :aria-controls="results?.length ? `localsearch-list` : undefined"
             aria-labelledby="localsearch-label"
             autocapitalize="off"
             autocomplete="off"
@@ -398,7 +401,7 @@
             id="localsearch-input"
             enterkeyhint="go"
             maxlength="64"
-            :placeholder="translate('button.buttonText')"
+            :placeholder="translate(`button.buttonText`)"
             spellcheck="false"
             type="search"
           />
@@ -407,7 +410,7 @@
               class="clear-button"
               type="reset"
               :disabled="disableReset"
-              :title="translate('modal.resetButtonTitle')"
+              :title="translate(`modal.resetButtonTitle`)"
               @click="resetSearch"
             >
               <span class="vpi-delete local-search-icon" />
@@ -417,17 +420,17 @@
 
         <ul
           ref="resultsEl"
-          :id="results?.length ? 'localsearch-list' : undefined"
-          :role="results?.length ? 'listbox' : undefined"
-          :aria-labelledby="results?.length ? 'localsearch-label' : undefined"
+          :id="results?.length ? `localsearch-list` : undefined"
+          :role="results?.length ? `listbox` : undefined"
+          :aria-labelledby="results?.length ? `localsearch-label` : undefined"
           class="results"
           @mousemove="onMouseMove"
         >
           <li
             v-for="(p, index) in results"
             :key="p.id"
-            :id="'localsearch-item-' + index"
-            :aria-selected="selectedIndex === index ? 'true' : 'false'"
+            :id="`localsearch-item-${index}`"
+            :aria-selected="selectedIndex === index ? `true` : `false`"
             role="option"
           >
             <a
@@ -436,10 +439,10 @@
               :class="{
                 selected: selectedIndex === index
               }"
-              :aria-label="[...p.titles, p.title].join(' > ')"
+              :aria-label="[...p.titles, p.title].join(` > `)"
               @mouseenter="!disableMouseOver && (selectedIndex = index)"
               @focusin="selectedIndex = index"
-              @click="$emit('close')"
+              @click="$emit(`close`)"
               :data-index="index"
             >
               <div>
@@ -470,7 +473,7 @@
             v-if="filterText && !results.length && enableNoResults"
             class="no-results"
           >
-            {{ translate('modal.noResultsText') }}
+            {{ translate(`modal.noResultsText`) }}
             "<strong>{{ filterText }}</strong
             >"
           </li>

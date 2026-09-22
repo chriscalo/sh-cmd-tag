@@ -29,7 +29,8 @@
  * =============================================================================
  */
 import { spawn } from "node:child_process";
-import { watch, utimesSync, existsSync } from "node:fs";
+import { readdirSync, watch, utimesSync, existsSync } from "node:fs";
+import { join } from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
 
@@ -48,6 +49,29 @@ const WATCH_DIRS = ["guide", "reference"];
  */
 export function recursiveWatchSupported(platform = process.platform) {
   return platform === "darwin" || platform === "win32";
+}
+
+/**
+ * The directories to hand to `fs.watch()` in order to cover `dir` and
+ * everything under it. With recursive watching that is just `dir`; without it,
+ * every nested subdirectory needs its own watcher, or edits inside a nested
+ * section (`guide/advanced/`) never reach the top-level watcher and the nav
+ * goes stale until the server restarts.
+ * @param {string} dir - Content directory to cover
+ * @param {object} options - `{ recursive }`, as passed to `fs.watch()`
+ * @returns {string[]} Directories to watch; empty when `dir` does not exist
+ */
+export function watchTargets(dir, { recursive }) {
+  if (!existsSync(dir)) {
+    return [];
+  }
+  if (recursive) {
+    return [dir];
+  }
+  const nested = readdirSync(dir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .flatMap((entry) => watchTargets(join(dir, entry.name), { recursive }));
+  return [dir, ...nested];
 }
 
 /**
@@ -77,28 +101,30 @@ function startDevServer() {
   const npx = process.platform === "win32" ? "npx.cmd" : "npx";
   const child = spawn(npx, ["vitepress", "dev", "."], { stdio: "inherit" });
 
+  // Where recursion is unavailable, cover the tree by watching each nested
+  // directory directly. Directories added during the session are picked up on
+  // the next restart, which the config touch triggers anyway.
   const recursive = recursiveWatchSupported();
+  const targets = WATCH_DIRS.flatMap((dir) => watchTargets(dir, { recursive }));
   if (!recursive) {
     console.log(
       `[dev] recursive watching is unavailable on ${process.platform}; ` +
-      `watching only the top level of ${WATCH_DIRS.join(", ")}`,
+      `watching ${targets.length} directories individually`,
     );
   }
 
-  const watchers = WATCH_DIRS
-    .filter((dir) => existsSync(dir))
-    .map((dir) =>
-      watch(dir, { recursive }, (event, filename) => {
-        if (touch(CONFIG_PATH)) {
-          console.log(`\n[dev] ${event}: ${dir}/${filename} — reloading nav\n`);
-        } else {
-          console.warn(
-            `\n[dev] ${event}: ${dir}/${filename} — cannot reload nav: ` +
-            `${CONFIG_PATH} not found\n`,
-          );
-        }
-      }),
-    );
+  const watchers = targets.map((dir) =>
+    watch(dir, { recursive }, (event, filename) => {
+      if (touch(CONFIG_PATH)) {
+        console.log(`\n[dev] ${event}: ${dir}/${filename} — reloading nav\n`);
+      } else {
+        console.warn(
+          `\n[dev] ${event}: ${dir}/${filename} — cannot reload nav: ` +
+          `${CONFIG_PATH} not found\n`,
+        );
+      }
+    }),
+  );
 
   return { child, watchers };
 }

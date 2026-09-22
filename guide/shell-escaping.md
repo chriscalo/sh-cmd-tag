@@ -38,6 +38,17 @@ Without escaping, `; echo gotcha` would run as a second command. With
 
 ## Opting out with `markSafeString()`
 
+::: danger `markSafeString()` does not work when interpolated
+The example below is the intended behavior, but it throws today:
+`markSafeString()` returns a boxed `String`, which the interpolator routes into
+its flags-object branch before it checks whether the value is marked safe, so
+you get `Invalid flag name: "0"` instead of the command. Track the fix in
+[issue #32](https://github.com/chriscalo/sh-cmd-tag/issues/32). Until then, put
+trusted literal text directly in the template — `` sh`ls -la ${path}` `` rather
+than `` sh`ls ${markSafeString("-la")} ${path}` `` — which leaves escaping in
+force for the values that actually need it.
+:::
+
 Sometimes you have trusted input that is *meant* to contain shell syntax — for
 example, a fixed set of flags you control. Wrap it with
 [`markSafeString()`](/reference/utilities#marksafestring) to skip escaping:

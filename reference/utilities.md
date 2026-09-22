@@ -21,6 +21,16 @@ safe changes nothing there — see [Interpolation](/guide/interpolation).) Use i
 only for trusted input you fully control — see the warning in
 [Shell Escaping](/guide/shell-escaping#opting-out-with-marksafestring).
 
+::: danger Throws when interpolated
+Interpolating a marked string into `sh` or `cmd` throws
+`Invalid flag name: "0"` today, because the boxed `String` it returns is routed
+into the flags-object branch before the safe-string check. The example below is
+the intended behavior; track the fix in
+[issue #32](https://github.com/chriscalo/sh-cmd-tag/issues/32). `shellEscape()`
+does honor marked strings, and putting trusted text directly in the template
+works.
+:::
+
 ```javascript
 import { sh, markSafeString } from "@chriscalo/sh-cmd-tag";
 
