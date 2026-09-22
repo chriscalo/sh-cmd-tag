@@ -1825,15 +1825,33 @@ test("start starts deferred process", async () => {
   assert.equal(actual, expected);
 });
 
-test("start() throws error if already started", async () => {
+test("start() on an already-started process is a no-op", async () => {
   const { Process } = await import("./index.js");
   const proc = new Process("echo hello", { immediate: false });
   
   proc.start();
+  const child = proc.started;
   
-  assert.throws(() => {
+  assert.doesNotThrow(() => {
     proc.start();
-  }, Error);
+  });
+  
+  const actual = proc.started;
+  const expected = child;
+  assert.equal(actual, expected);
+  
+  await proc;
+});
+
+test("start() returns the process for chaining", async () => {
+  const { Process } = await import("./index.js");
+  const proc = new Process("echo hello", { immediate: false });
+  
+  const actual = proc.start();
+  const expected = proc;
+  assert.equal(actual, expected);
+  
+  await proc;
 });
 
 test("output getter provides stdout stream access", async () => {
@@ -1857,5 +1875,17 @@ test("input getter provides stdin stream access", async () => {
   const { Process } = await import("./index.js");
   const proc = new Process("cat", { immediate: true });
   
+  assert.ok(proc.input instanceof Writable);
+  
+  await proc.kill();
+});
+
+test("exposed streams exist before the process starts", async () => {
+  const { Readable, Writable } = await import("node:stream");
+  const { Process } = await import("./index.js");
+  const proc = new Process("echo hello", { immediate: false });
+  
+  assert.ok(proc.output instanceof Readable);
+  assert.ok(proc.debug instanceof Readable);
   assert.ok(proc.input instanceof Writable);
 });

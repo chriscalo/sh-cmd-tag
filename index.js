@@ -1,7 +1,8 @@
 import { spawn, spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Readable, Writable } from "node:stream";
+import { PassThrough, Readable, Writable } from "node:stream";
 
 // Safe string infrastructure
 const SHELL_SAFE = Symbol("shellSafe");
@@ -737,6 +738,95 @@ sh.sync = addChainableProps(shSyncBase, true, true);
 cmd.sync = addChainableProps(cmdSyncBase, false, true);
 
 /**
+ * Resolves the shell the library runs commands through.
+ *
+ * Node's `shell: true` means `/bin/sh`, which is bash in POSIX mode on macOS
+ * and dash on Debian, Ubuntu, and Alpine. Those differ in ways that are not
+ * cosmetic, so the shell is chosen here rather than inherited, and the same
+ * command means the same thing on every supported platform.
+ */
+function selectShell() {
+  for (const candidate of ["/bin/bash", "/usr/bin/bash"]) {
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return "/bin/sh";
+}
+
+const DURATION_PATTERN = /^(\d+(?:\.\d+)?)(ms|s|m|h)$/;
+const DURATION_UNITS = { ms: 1, s: 1000, m: 60000, h: 3600000 };
+
+/**
+ * Converts a duration to milliseconds.
+ *
+ * Numbers are already milliseconds, matching how Node expresses every
+ * duration. Strings carry an explicit unit, because the whole point of the
+ * string form is that the unit is visible at the call site.
+ */
+function toMilliseconds(value, key) {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (value === Infinity) {
+    return Infinity;
+  }
+  if (typeof value === "number") {
+    if (!Number.isFinite(value) || value < 0) {
+      throw new TypeError(`${key} must be a non-negative duration`);
+    }
+    return value;
+  }
+  if (typeof value !== "string") {
+    throw new TypeError(`${key} must be a number of milliseconds or a string`);
+  }
+  const match = DURATION_PATTERN.exec(value.trim());
+  if (!match) {
+    throw new TypeError(
+      `${key}: "${value}" is not a duration. Use a number of milliseconds, ` +
+      `or a string with a unit such as "30s".`
+    );
+  }
+  return Number(match[1]) * DURATION_UNITS[match[2]];
+}
+
+/**
+ * Builds the child environment, honouring the colour conventions.
+ *
+ * Exactly one variable is ever set. Precedence between them is
+ * implementation-dependent, so setting both would make behaviour depend on
+ * which tool the caller happened to run.
+ */
+function buildEnvironment(config) {
+  const env = { ...process.env, ...config.env };
+  delete env.FORCE_COLOR;
+  delete env.NO_COLOR;
+  if (config.color === true) {
+    env.FORCE_COLOR = "1";
+  } else if (config.color === false) {
+    env.NO_COLOR = "1";
+  } else {
+    if ("FORCE_COLOR" in process.env) env.FORCE_COLOR = process.env.FORCE_COLOR;
+    if ("NO_COLOR" in process.env) env.NO_COLOR = process.env.NO_COLOR;
+  }
+  return env;
+}
+
+/**
+ * Recursively freezes an object so a running process's configuration cannot
+ * be mutated from under it.
+ */
+function deepFreeze(value) {
+  if (value === null || typeof value !== "object" || Object.isFrozen(value)) {
+    return value;
+  }
+  for (const key of Object.getOwnPropertyNames(value)) {
+    deepFreeze(value[key]);
+  }
+  return Object.freeze(value);
+}
+
+/**
  * Process class that encapsulates child process execution with streaming
  * output and enhanced control capabilities.
  */
@@ -746,6 +836,16 @@ class Process {
   #commandString;
   #config;
   #childProcess;
+  #io;
+  #shell;
+  #promise;
+  #resolve;
+  #reject;
+  #settled = false;
+  #timedOut = false;
+  #timeoutTimer;
+  #outputChunks = [];
+  #debugChunks = [];
   
   /**
    * Creates a new Process instance.
@@ -754,10 +854,32 @@ class Process {
    */
   constructor(commandString, config = {}) {
     this.#commandString = commandString;
-    this.#config = Object.freeze({ 
+    this.#config = deepFreeze({ 
       ...Process.#defaults,
       ...config,
     });
+    
+    toMilliseconds(this.#config.timeout, "timeout");
+    toMilliseconds(this.#config.gracePeriod, "gracePeriod");
+    
+    this.#shell = selectShell();
+    
+    const { promise, resolve, reject } = Promise.withResolvers();
+    this.#promise = promise;
+    this.#resolve = resolve;
+    this.#reject = reject;
+    // Nothing may observe a rejection until the caller awaits, so keep Node
+    // from reporting it as unhandled in the meantime.
+    promise.catch(() => {});
+    
+    // Created here, not in start(), so handlers and pipes can be attached
+    // before anything runs. These are the same objects data flows through
+    // once the child exists.
+    this.#io = {
+      output: new PassThrough(),
+      debug: new PassThrough(),
+      input: new PassThrough(),
+    };
     
     if (this.config.immediate) {
       this.start();
@@ -789,41 +911,239 @@ class Process {
   }
   
   /**
+   * Gets the shell this process runs through, for introspection.
+   * @returns {string} Path to the selected shell
+   */
+  get shell() {
+    return this.#shell;
+  }
+  
+  /**
    * Gets the stdout stream for this process.
-   * @returns {ReadableStream | null} The stdout stream
+   * @returns {PassThrough} The stdout stream
    */
   get output() {
-    return this.#childProcess?.stdout || null;
+    return this.#io.output;
   }
   
   /**
    * Gets the stderr stream for this process.
-   * @returns {ReadableStream | null} The stderr stream
+   * @returns {PassThrough} The stderr stream
    */
   get debug() {
-    return this.#childProcess?.stderr || null;
+    return this.#io.debug;
   }
   
   /**
    * Gets the stdin stream for this process.
-   * @returns {WritableStream | null} The stdin stream
+   * @returns {PassThrough} The stdin stream
    */
   get input() {
-    return this.#childProcess?.stdin || null;
+    return this.#io.input;
   }
   
   /**
-   * Starts the process execution.
+   * Starts the process, if it has not started already.
+   *
+   * Idempotent: `then()` and `pipe()` both start a deferred process on
+   * demand, so ensure-start is a primitive the class needs regardless, and
+   * with `immediate: true` as the default, already-started is the normal
+   * state rather than a caller error.
+   *
+   * @returns {Process} This process, for chaining
    */
   start() {
     if (this.started) {
-      throw new Error(`Process "${this.command}" has already been started`);
+      return this;
     }
-    this.#childProcess = {
-      stdout: new Readable({ read() {} }),
-      stderr: new Readable({ read() {} }),
-      stdin: new Writable({ write() {} }),
+    this.#spawn();
+    return this;
+  }
+  
+  #spawn() {
+    this.#childProcess = spawn(this.#commandString, {
+      shell: this.#config.shell === false ? false : this.#shell,
+      cwd: this.#config.cwd,
+      env: buildEnvironment(this.#config),
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    
+    this.#bridgeStreams();
+    this.#settleOn(this.#childProcess);
+    this.#armTimeout();
+  }
+  
+  #bridgeStreams() {
+    const child = this.#childProcess;
+    
+    if (child.stdout) {
+      child.stdout.pipe(this.#io.output);
+      child.stdout.on("data", (chunk) => {
+        this.#outputChunks.push(chunk);
+        if (this.#config.output) {
+          process.stdout.write(chunk);
+        }
+      });
+    }
+    if (child.stderr) {
+      child.stderr.pipe(this.#io.debug);
+      child.stderr.on("data", (chunk) => {
+        this.#debugChunks.push(chunk);
+        if (this.#config.debug) {
+          process.stderr.write(chunk);
+        }
+      });
+    }
+    if (child.stdin) {
+      this.#io.input.pipe(child.stdin);
+    }
+  }
+  
+  #settleOn(child) {
+    const finish = (error) => {
+      if (this.#settled) return;
+      this.#settled = true;
+      clearTimeout(this.#timeoutTimer);
+      
+      const output = Buffer.concat(this.#outputChunks).toString();
+      const debug = Buffer.concat(this.#debugChunks).toString();
+      
+      if (!error) {
+        this.#resolve(new ProcessResult({ ok: true, output, debug }));
+        return;
+      }
+      
+      error.output = output;
+      error.debug = debug;
+      
+      if (this.#config.throw === false) {
+        this.#resolve(new ProcessResult({ ok: false, error, output, debug }));
+      } else {
+        this.#reject(error);
+      }
     };
+    
+    child.on("error", (err) => {
+      finish(new ProcessError({
+        message: err.message,
+        // A missing command is exit code 127 by shell convention.
+        code: err.code === "ENOENT" ? 127 : (err.errno ?? 1),
+        output: "",
+        debug: "",
+      }));
+    });
+    
+    child.on("close", (code, signal) => {
+      if (code === 0) {
+        finish(null);
+        return;
+      }
+      const error = new ProcessError({
+        message: this.#timedOut
+          ? `Command timed out: ${this.#commandString}`
+          : `Command failed with exit code ${code}`,
+        code: code === null ? 128 : code,
+        output: "",
+        debug: "",
+      });
+      if (this.#timedOut) {
+        error.timedOut = true;
+      }
+      if (signal) {
+        error.signal = signal;
+      }
+      finish(error);
+    });
+  }
+  
+  #armTimeout() {
+    const timeout = toMilliseconds(this.#config.timeout, "timeout");
+    if (timeout === undefined || timeout === Infinity) {
+      return;
+    }
+    // The clock starts here, when the process starts, rather than at
+    // construction: a deferred process could otherwise expire unrun.
+    this.#timeoutTimer = setTimeout(() => {
+      this.#timedOut = true;
+      this.stop();
+    }, timeout);
+    this.#timeoutTimer.unref?.();
+  }
+  
+  /**
+   * Terminates the process politely, escalating to an unrefusable kill if it
+   * does not exit within the grace period.
+   *
+   * @param {object} options - Optionally overrides `gracePeriod` for this call
+   * @returns {Promise} Resolves once the process has exited
+   */
+  async stop(options = {}) {
+    if (!this.started || this.#settled) {
+      return;
+    }
+    const grace = toMilliseconds(
+      options.gracePeriod ?? this.#config.gracePeriod ?? 5000,
+      "gracePeriod",
+    );
+    
+    this.#childProcess.kill("SIGTERM");
+    
+    if (grace !== Infinity) {
+      const timer = setTimeout(() => {
+        if (!this.#settled) {
+          this.#childProcess.kill("SIGKILL");
+        }
+      }, grace);
+      timer.unref?.();
+    }
+    
+    await this.#promise.catch(() => {});
+  }
+  
+  /**
+   * Terminates the process immediately. Cannot be refused, and the process
+   * gets no chance to clean up.
+   *
+   * @returns {Promise} Resolves once the process has exited
+   */
+  async kill() {
+    if (!this.started || this.#settled) {
+      return;
+    }
+    this.#childProcess.kill("SIGKILL");
+    await this.#promise.catch(() => {});
+  }
+  
+  /**
+   * Delivers the equivalent of Ctrl-C.
+   *
+   * @returns {Promise} Resolves once the process has exited
+   */
+  async interrupt() {
+    if (!this.started || this.#settled) {
+      return;
+    }
+    this.#childProcess.kill("SIGINT");
+    await this.#promise.catch(() => {});
+  }
+  
+  /**
+   * Makes the process awaitable, starting it if it is still deferred.
+   */
+  then(onFulfilled, onRejected) {
+    this.start();
+    return this.#promise.then(onFulfilled, onRejected);
+  }
+  
+  catch(onRejected) {
+    return this.then(undefined, onRejected);
+  }
+  
+  finally(onFinally) {
+    return this.then(
+      (value) => Promise.resolve(onFinally()).then(() => value),
+      (reason) => Promise.resolve(onFinally()).then(() => Promise.reject(reason)),
+    );
   }
 }
 
