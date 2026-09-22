@@ -1193,6 +1193,7 @@ function isTemplateTagInvocation(args) {
  */
 class Pipeline {
   #stages = [];
+  #streamCompletions = new Map();
   
   constructor(source) {
     this.#stages.push(source);
@@ -1238,6 +1239,24 @@ class Pipeline {
     
     source.pipe(next instanceof Process ? next.input : next);
     this.#stages.push(next);
+    
+    if (!(next instanceof Process)) {
+      // Watched from here rather than when the pipeline is awaited: a stream
+      // that fails before anyone is listening emits an unhandled "error",
+      // which takes the whole process down instead of failing the stage.
+      this.#streamCompletions.set(
+        next,
+        finished(next).then(() => null, (error) => {
+          // A broken stage leaves everything downstream waiting on input
+          // that will never arrive, so the chain is torn down rather than
+          // left hanging. The error is already recorded, and settling
+          // reports the earliest failing stage, so it stays the cause.
+          this.kill();
+          return error;
+        }),
+      );
+    }
+    
     return this;
   }
   
@@ -1253,27 +1272,35 @@ class Pipeline {
    * short-circuits, carrying which stage failed.
    */
   async #settle() {
-    const processes = this.stages;
-    const results = await Promise.allSettled(processes.map((p) => p));
-    const streamEnds = this.#stages
-      .filter((stage) => !(stage instanceof Process))
-      .map((stream) => finished(stream).catch((error) => { throw error; }));
-    await Promise.allSettled(streamEnds);
+    // Indexed by stage, so a failure can say which stage failed whether it
+    // was a process or a stream.
+    const outcomes = await Promise.all(this.#stages.map(async (stage, index) => {
+      if (stage instanceof Process) {
+        try {
+          return { index, stage, result: await stage };
+        } catch (error) {
+          return { index, stage, error };
+        }
+      }
+      const error = await this.#streamCompletions.get(stage);
+      return { index, stage, error: error ?? undefined };
+    }));
     
-    const failedIndex = results.findIndex((r) => r.status === "rejected");
-    if (failedIndex !== -1) {
-      const error = results[failedIndex].reason;
-      error.stage = failedIndex;
-      error.command = processes[failedIndex].command;
+    const failed = outcomes.find((outcome) => outcome.error);
+    if (failed) {
+      const { error } = failed;
+      error.stage = failed.index;
+      if (failed.stage instanceof Process) {
+        error.command = failed.stage.command;
+      }
       throw error;
     }
     
-    const settled = results.map((r) => r.value);
-    const failedResult = settled.findIndex((r) => r && r.ok === false);
-    if (failedResult !== -1) {
-      return settled[failedResult];
-    }
-    return settled[settled.length - 1];
+    const results = outcomes
+      .filter((outcome) => outcome.result)
+      .map((outcome) => outcome.result);
+    const unsuccessful = results.find((result) => result.ok === false);
+    return unsuccessful ?? results[results.length - 1];
   }
   
   then(onFulfilled, onRejected) {

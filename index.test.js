@@ -2457,3 +2457,24 @@ test("an explicit cwd still overrides the default", async () => {
   const actual = (await sh({ cwd: "/tmp" })`pwd`).output.trim();
   assert.match(actual, /tmp$/);
 });
+
+test("a mid-chain stream error fails that stage instead of hanging",
+  async () => {
+    const { sh } = await import("./index.js");
+    const { Transform } = await import("node:stream");
+    
+    const exploding = new Transform({
+      transform(chunk, encoding, callback) {
+        callback(new Error("transform blew up"));
+      },
+    });
+    
+    await assert.rejects(
+      async () => { await sh`echo data`.pipe(exploding).pipe`cat`; },
+      (error) => {
+        assert.equal(error.message, "transform blew up");
+        assert.equal(error.stage, 1);
+        return true;
+      },
+    );
+  });
