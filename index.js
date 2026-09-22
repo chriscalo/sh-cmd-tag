@@ -129,22 +129,41 @@ function isStream(obj) {
 // Synchronous execution
 function executeSyncCommand(cmd, args, spawnOptions, inputData, options) {
   try {
+    // A blocking call has no moment in which to wait politely and then
+    // escalate, so the deadline is enforced with an unrefusable kill. The
+    // promise is the same as the asynchronous form — the deadline holds and
+    // the failure is labelled — while the mechanism differs because the mode
+    // does. gracePeriod is meaningless here and is ignored.
+    const timeout = toMilliseconds(options.timeout, "timeout");
     const result = spawnSync(cmd, args, {
       ...spawnOptions,
       input: inputData,
       encoding: "utf8",
+      ...(timeout !== undefined && timeout !== Infinity
+        ? { timeout, killSignal: "SIGKILL" }
+        : {}),
     });
+    
+    const timedOut = Boolean(
+      timeout !== undefined &&
+      (result.error?.code === "ETIMEDOUT" || result.signal === "SIGKILL"),
+    );
     
     const output = result.stdout || "";
     const debug = result.stderr || "";
     
-    if (result.error) {
+    if (result.error || timedOut) {
       const error = new ProcessError({
-        message: result.error.message,
-        code: result.error.code,
+        message: timedOut
+          ? `Command timed out: ${cmd}`
+          : result.error.message,
+        code: timedOut ? (result.status ?? "ETIMEDOUT") : result.error.code,
         output,
         debug,
       });
+      if (timedOut) {
+        error.timedOut = true;
+      }
       if (options.throw !== false) {
         throw error;
       }

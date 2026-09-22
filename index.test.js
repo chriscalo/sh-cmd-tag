@@ -2478,3 +2478,30 @@ test("a mid-chain stream error fails that stage instead of hanging",
       },
     );
   });
+
+test("sync honours timeout, enforcing the deadline with an immediate kill",
+  async () => {
+    const { sh } = await import("./index.js");
+    const started = Date.now();
+    
+    assert.throws(
+      () => { sh.sync({ timeout: "300ms" })`sleep 30`; },
+      (error) => {
+        assert.equal(error.name, "ProcessError");
+        assert.equal(error.timedOut, true);
+        return true;
+      },
+    );
+    
+    const elapsed = Date.now() - started;
+    assert.ok(elapsed < 5000, `sync timeout took ${elapsed}ms`);
+  });
+
+test("sync safe mode resolves a timeout instead of throwing", async () => {
+  const { sh } = await import("./index.js");
+  
+  const result = sh.sync.safe({ timeout: "300ms" })`sleep 30`;
+  
+  assert.equal(result.ok, false);
+  assert.equal(result.error.timedOut, true);
+});
