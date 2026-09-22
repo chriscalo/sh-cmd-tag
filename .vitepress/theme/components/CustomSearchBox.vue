@@ -187,7 +187,8 @@
           .querySelector(`mark[data-markjs="true"]`)
           ?.scrollIntoView({ block: "center" });
       }
-      // FIXME: without this whole page scrolls to the bottom
+      // Centering each highlight above scrolls the page along with the
+      // results pane, so put the pane back at its first result.
       resultsEl.value?.firstElementChild?.scrollIntoView({ block: "start" });
     },
     { debounce: 200, immediate: true },
