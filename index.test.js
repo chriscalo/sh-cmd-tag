@@ -2806,3 +2806,62 @@ test("an input stream error closes the child's stdin", async () => {
   const expected = "settled";
   assert.equal(actual, expected);
 });
+
+test("a failing stage tears down the rest of the pipeline", async () => {
+  // Without this the chain waits for every stage before reporting, so a
+  // failed first stage followed by a long-running one stays pending for the
+  // full duration — and a downstream that never ends, forever.
+  const { sh } = await import("./index.js");
+  const started = Date.now();
+  
+  const error = await sh`false`.pipe`sleep 30`.catch((e) => e);
+  const elapsed = Date.now() - started;
+  
+  const actual = { stage: error.stage, promptly: elapsed < 5000 };
+  const expected = { stage: 0, promptly: true };
+  assert.deepEqual(actual, expected, `took ${elapsed}ms`);
+});
+
+test("a child killed before its deadline is not reported as timed out",
+  async () => {
+    // spawnSync reports the same SIGKILL whether the deadline expired or the
+    // child killed itself, so only its own ETIMEDOUT can tell them apart.
+    const { sh } = await import("./index.js");
+    
+    const result = sh.sync.safe({ timeout: "10s" })`sh -c "kill -9 $$"`;
+    
+    const actual = { ok: result.ok, timedOut: Boolean(result.error.timedOut) };
+    const expected = { ok: false, timedOut: false };
+    assert.deepEqual(actual, expected);
+  });
+
+test("stopping delivers one signal, not two", async () => {
+  // The process group includes the child, so signalling both delivers the
+  // same signal twice and can interrupt a graceful shutdown already under
+  // way on the first.
+  const { sh } = await import("./index.js");
+  const { writeFileSync, unlinkSync } = await import("node:fs");
+  const script = `/tmp/sh-cmd-tag-signals-${process.pid}.js`;
+  writeFileSync(
+    script,
+    'let n = 0;' +
+    'process.on("SIGTERM", () => {' +
+    '  n++; console.log("TERM " + n);' +
+    '  setTimeout(() => process.exit(0), 200);' +
+    '});' +
+    'setInterval(() => {}, 1000);',
+  );
+  
+  try {
+    const proc = sh.safe`node ${script}`;
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    await proc.stop();
+    const result = await proc;
+    
+    const actual = result.output.trim();
+    const expected = "TERM 1";
+    assert.equal(actual, expected);
+  } finally {
+    try { unlinkSync(script); } catch {}
+  }
+});

@@ -144,10 +144,10 @@ function executeSyncCommand(cmd, args, spawnOptions, inputData, options) {
         : {}),
     });
     
-    const timedOut = Boolean(
-      timeout !== undefined &&
-      (result.error?.code === "ETIMEDOUT" || result.signal === "SIGKILL"),
-    );
+    // Only spawnSync's own ETIMEDOUT says the deadline expired. The signal
+    // cannot: a child that kills itself exits with exactly the same
+    // SIGKILL, and would otherwise be reported as having timed out.
+    const timedOut = result.error?.code === "ETIMEDOUT";
     
     const output = result.stdout || "";
     const debug = result.stderr || "";
@@ -1193,17 +1193,17 @@ class Process {
    * alone if the group is already gone.
    */
   #signalTree(signal) {
-    // Both, not one or the other. Signalling the group is what reaches the
-    // whole tree, but there is a window just after spawn where the child has
-    // not yet become a group leader, and -pid fails with ESRCH. Treating
-    // that as "fall back to the child alone" silently kills only the outer
-    // shell and leaves everything it started running.
+    // The group includes the child, so signalling both would deliver the
+    // same signal twice — and a process shutting down gracefully on the
+    // first one can have that interrupted by the second.
     try {
       process.kill(-this.#childProcess.pid, signal);
-    } catch {}
-    try {
-      this.#childProcess.kill(signal);
-    } catch {}
+    } catch {
+      // No group yet, or it is already gone: fall back to the child alone.
+      try {
+        this.#childProcess.kill(signal);
+      } catch {}
+    }
   }
   
   /**
@@ -1280,6 +1280,7 @@ function isTemplateTagInvocation(args) {
 class Pipeline {
   #stages = [];
   #streamCompletions = new Map();
+  #tornDown = false;
   
   constructor(source) {
     this.#stages.push(source);
@@ -1337,7 +1338,7 @@ class Pipeline {
           // that will never arrive, so the chain is torn down rather than
           // left hanging. The error is already recorded, and settling
           // reports the earliest failing stage, so it stays the cause.
-          this.kill();
+          this.#teardown();
           return error;
         }),
       );
@@ -1370,6 +1371,17 @@ class Pipeline {
     
     // Indexed by stage, so a failure can say which stage failed whether it
     // was a process or a stream.
+    // A failing stage tears down the rest rather than leaving the pipeline
+    // waiting on them: `sh`false`.pipe`sleep 30`` should not wait thirty
+    // seconds to report that its first stage failed, and a downstream that
+    // never terminates would leave it pending forever. Settling still picks
+    // the earliest failure, so the original cause is what gets reported.
+    for (const stage of this.#stages) {
+      if (stage instanceof Process) {
+        stage.catch(() => this.#teardown());
+      }
+    }
+    
     const outcomes = await Promise.all(
       this.#stages.map(async (stage, index) => {
         if (stage instanceof Process) {
@@ -1432,6 +1444,20 @@ class Pipeline {
       yield chunk;
     }
     await this.#settle();
+  }
+  
+  #teardown() {
+    if (this.#tornDown) {
+      return;
+    }
+    this.#tornDown = true;
+    for (const stage of this.#stages) {
+      if (stage instanceof Process) {
+        stage.kill();
+      } else if (typeof stage.destroy === "function") {
+        stage.destroy();
+      }
+    }
   }
   
   /**
