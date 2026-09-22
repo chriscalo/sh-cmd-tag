@@ -2906,9 +2906,15 @@ test("a finished stage closes the producers feeding it", async () => {
   // Without this an endless producer never learns its consumer is gone,
   // and the chain runs forever. A shell sends SIGPIPE; this is the
   // equivalent, and the closed producer is not counted as a failure.
+  //
+  // The producer is paced deliberately. `yes` proves the same thing but
+  // emits hundreds of megabytes before teardown, which made this test's
+  // timing — and its memory use — vary enough to fail intermittently on
+  // Node 22.
   const { sh } = await import("./index.js");
+  const producer = "while true; do echo y; sleep 0.01; done";
   
-  const result = await sh.safe`yes`.pipe`head -2`;
+  const result = await sh.safe`sh -c ${producer}`.pipe`head -2`;
   
   const actual = { ok: result.ok, output: result.output };
   const expected = { ok: true, output: "y\ny\n" };
@@ -2958,5 +2964,55 @@ test("piping from a deferred process starts it", async () => {
   
   const actual = collected.trim();
   const expected = "deferred";
+  assert.equal(actual, expected);
+});
+
+test("capture is bounded so a noisy process still settles", async () => {
+  // An endless producer used to accumulate every chunk until
+  // Buffer.concat().toString() exceeded the maximum string length — and
+  // that threw inside the completion handler, so the process never settled
+  // at all rather than merely losing output.
+  const { sh } = await import("./index.js");
+  const producer = "while true; do echo y; sleep 0.01; done";
+  const proc = sh.safe`sh -c ${producer}`;
+  
+  setTimeout(() => proc.kill(), 200);
+  
+  let timer;
+  const settled = await Promise.race([
+    proc.then(() => "settled"),
+    new Promise((resolve) => {
+      timer = setTimeout(() => resolve("hung"), 4000);
+    }),
+  ]).finally(() => clearTimeout(timer));
+  
+  const actual = settled;
+  const expected = "settled";
+  assert.equal(actual, expected);
+});
+
+test("a caller can choose the shell", async () => {
+  // The library picking bash is a default, not a restriction: a caller who
+  // wants dash, zsh, or a shell at a particular path says so.
+  const { sh } = await import("./index.js");
+  const { existsSync } = await import("node:fs");
+  if (!existsSync("/bin/dash")) return;
+  
+  const actual = {
+    named: (await sh({ shell: "/bin/dash" })`echo $0`).output.trim(),
+    sync: sh.sync({ shell: "/bin/dash" })`echo $0`.output.trim(),
+  };
+  const expected = { named: "/bin/dash", sync: "/bin/dash" };
+  assert.deepEqual(actual, expected);
+});
+
+test("the chosen shell is introspectable", async () => {
+  const { Process } = await import("./index.js");
+  
+  const actual = new Process("true", {
+    immediate: false,
+    shell: "/bin/dash",
+  }).shell;
+  const expected = "/bin/dash";
   assert.equal(actual, expected);
 });

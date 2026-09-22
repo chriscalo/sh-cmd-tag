@@ -279,7 +279,7 @@ Any of these can be passed to `sh({ ... })` or `cmd({ ... })`:
 | Option        | Default | Meaning                                      |
 | ------------- | ------- | -------------------------------------------- |
 | `immediate`   | `true`  | Start on construction rather than on `start()` |
-| `shell`       | `true`  | Run through a shell                          |
+| `shell`       | `true`  | `true` picks a shell for you; a string names one |
 | `output`      | `false` | Stream stdout to your terminal as it arrives |
 | `debug`       | `false` | Stream stderr to your terminal as it arrives |
 | `input`       | —       | `true` inherits your stdin; a string or stream is written |
@@ -290,6 +290,17 @@ Any of these can be passed to `sh({ ... })` or `cmd({ ... })`:
 | `signal`      | —       | An `AbortSignal`; aborting kills the process |
 | `env`         | —       | Variables, merged over `process.env`         |
 | `cwd`         | —       | Working directory                            |
+
+### Choosing a shell
+
+By default the library picks one — `bash` where available — so the same
+command behaves the same way on macOS and Linux rather than depending on
+whatever `/bin/sh` is on the host. That is a default, not a restriction:
+
+```javascript
+await sh({ shell: "/bin/dash" })`echo $0`;
+await sh({ shell: "zsh" })`setopt extended_glob; echo *`;
+```
 
 Chainable shorthands compose in any order: `safe`, `live`, `interactive`,
 `sync`, and `input(data)`.

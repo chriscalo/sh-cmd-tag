@@ -258,6 +258,12 @@ than inheriting whatever the host ships. Three consequences:
 3. The shell-dependent error text that the suite works around at
    `index.test.js:74` becomes uniform.
 
+Selecting a shell is a **default, not a restriction**. This is a general
+library, and a caller who wants zsh, dash, or an interpreter at a specific
+path says so with `shell: "..."`. What the default buys is that a caller who
+expresses no preference gets the same behaviour on every supported platform
+rather than whatever the host's `/bin/sh` happens to be.
+
 The selected shell is introspectable on the process, so a caller debugging an
 environment difference can see what ran.
 
@@ -330,6 +336,13 @@ class Process {
 - `config` is deep-frozen, including nested objects, so a caller cannot mutate
   a running process's configuration.
 
+- **Capture is bounded.** Output is accumulated up to what a JavaScript
+  string can hold, and `truncated` is set on the result once anything is
+  dropped. An endless producer would otherwise grow the buffer until
+  `Buffer.concat().toString()` exceeded the maximum string length — and that
+  throws inside the completion handler, so the process would not merely lose
+  output, it would never settle at all.
+
 ### Configuration
 
 The existing keys are unchanged. `output`, `debug`, and `input` name the
@@ -339,7 +352,9 @@ lifecycle: `output: true` configures it, `proc.output` is it flowing, and
 
 - **`immediate`** — boolean, default `true`. Start on construction rather
   than waiting for `start()`.
-- **`shell`** — boolean, default `true`. Run through a shell.
+- **`shell`** — boolean or string, default `true`. `true` runs through the
+  shell the library selects; a string names one — `"/bin/dash"`, `"zsh"`, a
+  path — for a caller who wants their own. `false` executes directly.
 - **`output`** — boolean, default `false`. Stream stdout to the parent live.
 - **`debug`** — boolean, default `false`. Stream stderr to the parent live.
 - **`input`** — boolean, string, or stream. `true` inherits the parent's

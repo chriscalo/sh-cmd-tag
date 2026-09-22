@@ -497,11 +497,11 @@ function runCommand(command, useShell, isSync, options) {
   };
   
   if (useShell) {
-    // The same selected shell as the asynchronous path, so sync and async
+    // The same resolved shell as the asynchronous path, so sync and async
     // agree about what a command means.
     cmd = command;
     args = [];
-    spawnOptions.shell = SELECTED_SHELL;
+    spawnOptions.shell = resolveShell(options.shell);
   } else {
     // Parse command for direct execution
     // Simple parsing that handles basic quoted arguments
@@ -527,7 +527,9 @@ function runCommand(command, useShell, isSync, options) {
   
   return new Process(command, {
     ...options,
-    shell: useShell,
+    // A caller who named a shell keeps it; `useShell` only decides whether
+    // there is one at all, which is what separates `sh` from `cmd`.
+    shell: useShell ? (options.shell ?? true) : false,
     cwd: workingDir,
     input: inputData ?? options.input,
   });
@@ -683,6 +685,39 @@ function selectShell() {
 
 const SELECTED_SHELL = selectShell();
 
+/**
+ * Resolves the `shell` option to a shell path.
+ *
+ * `true` lets the library choose, which is what makes the same command mean
+ * the same thing on macOS and Linux. A string names one explicitly — a
+ * caller who wants zsh, dash, or a shell at a particular path is not
+ * obliged to accept ours.
+ */
+function resolveShell(shell) {
+  if (shell === false) {
+    return false;
+  }
+  if (typeof shell === "string" && shell.length > 0) {
+    return shell;
+  }
+  return SELECTED_SHELL;
+}
+
+// A JS string cannot exceed this, so neither can captured output. Beyond it
+// the process would settle by throwing ERR_STRING_TOO_LONG from inside its
+// own completion handler, which means never settling at all.
+const MAX_CAPTURE_BYTES = 0x1fffffe8;
+
+/**
+ * Joins captured chunks, keeping what a string can hold.
+ */
+function joinCapture(chunks) {
+  const whole = Buffer.concat(chunks);
+  return whole.length > MAX_CAPTURE_BYTES
+    ? whole.subarray(0, MAX_CAPTURE_BYTES).toString()
+    : whole.toString();
+}
+
 const DURATION_PATTERN = /^(\d+(?:\.\d+)?)(ms|s|m|h)$/;
 const DURATION_UNITS = { ms: 1, s: 1000, m: 60000, h: 3600000 };
 
@@ -785,6 +820,8 @@ class Process {
   #timeoutTimer;
   #outputChunks = [];
   #debugChunks = [];
+  #captured = { output: 0, debug: 0 };
+  #truncated = false;
   #inheritedStdin = false;
   #abortListener;
   
@@ -803,7 +840,7 @@ class Process {
     toMilliseconds(this.#config.timeout, "timeout");
     toMilliseconds(this.#config.gracePeriod, "gracePeriod");
     
-    this.#shell = SELECTED_SHELL;
+    this.#shell = resolveShell(this.#config.shell);
     
     const { promise, resolve, reject } = Promise.withResolvers();
     this.#promise = promise;
@@ -912,7 +949,7 @@ class Process {
   }
   
   #spawn() {
-    const useShell = this.#config.shell !== false;
+    const useShell = this.#shell !== false;
     const parts = useShell
       ? null
       : (Array.isArray(this.#commandString)
@@ -923,7 +960,7 @@ class Process {
       useShell ? this.#commandString : parts[0],
       useShell ? [] : parts.slice(1),
       {
-        shell: useShell ? this.#shell : false,
+        shell: this.#shell,
         cwd: this.#config.cwd,
         env: buildEnvironment(this.#config),
         stdio: ["pipe", "pipe", "pipe"],
@@ -949,7 +986,7 @@ class Process {
     if (child.stdout) {
       child.stdout.pipe(this.#io.output);
       child.stdout.on("data", (chunk) => {
-        this.#outputChunks.push(chunk);
+        this.#capture(this.#outputChunks, chunk, "output");
         if (this.#config.output) {
           process.stdout.write(chunk);
         }
@@ -958,7 +995,7 @@ class Process {
     if (child.stderr) {
       child.stderr.pipe(this.#io.debug);
       child.stderr.on("data", (chunk) => {
-        this.#debugChunks.push(chunk);
+        this.#capture(this.#debugChunks, chunk, "debug");
         if (this.#config.debug) {
           process.stderr.write(chunk);
         }
@@ -1057,6 +1094,20 @@ class Process {
     }
   }
   
+  #capture(chunks, chunk, which) {
+    // Capturing without bound is how an endless producer exhausts memory,
+    // and past the string limit the result cannot be built at all. Stop
+    // accumulating there and say so, rather than growing until something
+    // breaks.
+    const held = this.#captured[which];
+    if (held >= MAX_CAPTURE_BYTES) {
+      this.#truncated = true;
+      return;
+    }
+    this.#captured[which] = held + chunk.length;
+    chunks.push(chunk);
+  }
+  
   #settleOn(child) {
     const finish = (error) => {
       if (this.#settled) return;
@@ -1076,16 +1127,23 @@ class Process {
         this.#inheritedStdin = false;
       }
       
-      const output = Buffer.concat(this.#outputChunks).toString();
-      const debug = Buffer.concat(this.#debugChunks).toString();
+      const output = joinCapture(this.#outputChunks);
+      const debug = joinCapture(this.#debugChunks);
       
       if (!error) {
-        this.#resolve(new ProcessResult({ ok: true, output, debug }));
+        const result = new ProcessResult({ ok: true, output, debug });
+        if (this.#truncated) {
+          result.truncated = true;
+        }
+        this.#resolve(result);
         return;
       }
       
       error.output = output;
       error.debug = debug;
+      if (this.#truncated) {
+        error.truncated = true;
+      }
       
       if (this.#config.throw === false) {
         this.#resolve(new ProcessResult({ ok: false, error, output, debug }));
@@ -1112,7 +1170,7 @@ class Process {
       }
       // stderr is appended when present, which is what makes a "command not
       // found" failure name the command that was not found.
-      const trimmedDebug = Buffer.concat(this.#debugChunks).toString().trim();
+      const trimmedDebug = joinCapture(this.#debugChunks).trim();
       let message = this.#timedOut
         ? `Command timed out: ${this.#commandString}`
         : `Command failed with exit code ${code}`;
