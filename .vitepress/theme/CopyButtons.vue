@@ -50,6 +50,7 @@
 <script setup>
   import { ref, computed, h } from "vue";
   import { useData } from "vitepress";
+  import { decodeBase64Utf8 } from "../markdown-source.js";
   
   const { page } = useData();
   
@@ -107,7 +108,7 @@
   
   async function copyMarkdown() {
     try {
-      const markdown = atob(page.value.markdownSourceBase64);
+      const markdown = decodeBase64Utf8(page.value.markdownSourceBase64);
       await navigator.clipboard.writeText(markdown);
       markdownCopied.value = true;
       setTimeout(() => markdownCopied.value = false, 2000);

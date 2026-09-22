@@ -24,6 +24,7 @@ import { fileURLToPath } from "node:url";
 import { DOCS_BASE, repoPathToUrl } from "./url.js";
 import { renderForIndex, tokenize, processTerm } from "./search-helpers.js";
 import { generateNav, formatSegment } from "./nav.js";
+import { encodeBase64Utf8 } from "./markdown-source.js";
 
 /**
  * Build the breadcrumb trail shown above a page title, derived from the page's
@@ -375,7 +376,7 @@ export default defineConfig({
     // Raw markdown for the copy-markdown button.
     try {
       const content = readFileSync(pageData.filePath, "utf-8");
-      pageData.markdownSourceBase64 = Buffer.from(content).toString("base64");
+      pageData.markdownSourceBase64 = encodeBase64Utf8(content);
     } catch {
       pageData.markdownSourceBase64 = null;
     }
