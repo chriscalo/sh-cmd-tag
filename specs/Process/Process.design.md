@@ -165,6 +165,70 @@ should take the capture reading. Against that: whether a mistake can be
 silent, and whether the failure is the kind a caller can diagnose without
 reading the source.
 
+### The question is wider than stdin
+
+Working the above through turned up three problems that are not about stdin
+at all, and that any answer has to solve together.
+
+**`output` and `capture` are two keys for one port.** `output` is not a
+setting for stdout; it is one *destination* for stdout, sitting at the top
+level as though it were the whole port, while `capture` is a second
+destination sitting beside it. Nothing stops the two from contradicting each
+other, and a draft of this document did exactly that — `output: false` with
+`debug: true`, then reading the result's `.output` — without the shape of
+the API making the nonsense visible.
+
+**A bound is not a number.** `capture: 65536` cannot say *which* 65536. Both
+ends are ordinary: a build that dies wants the last bytes, and a compiler
+whose first error causes every later one wants the first. The current design
+silently picks the tail.
+
+**Every port needs more than one thing at once.** Not just stdout. Recording
+what a human typed into an interactive session is the terminal *and* a
+capture on stdin; priming a REPL before handing it over is text *then* the
+terminal. So "one value per port" is wrong on the input side too, and any
+design where one port's common case has a different shape from another
+port's reads badly the moment a caller configures all three.
+
+### The use cases to design against
+
+Deliberately written as requirements rather than as configuration, so that
+competing designs can be compared against the same ground instead of each
+being shown on the examples that flatter it. Every row configures all three
+ports, because real callers do.
+
+| # | real program | input | output | debug |
+| --- | --- | --- | --- | --- |
+| 1 | read a value — `git branch --show-current` | none | keep | keep |
+| 2 | run for effect — `rm -rf dist` | none | discard | discard |
+| 3 | data vs progress — `terraform show -json` | none | keep | show |
+| 4 | visible test run, analyse after — `npm test` | none | show + keep | show + keep |
+| 5 | dev server — `npm run dev` | none | show, keep nothing | show, keep nothing |
+| 6 | dying build — `make -j8` | none | show + keep **last** 64K | show + keep last 64K |
+| 7 | cascading errors — `tsc` | none | keep **first** 8K | show |
+| 8 | react as it arrives — `npm install` | none | hand me a readable | keep |
+| 9 | file through a filter — `gzip` | a readable the caller supplies | a writable the caller supplies | keep |
+| 10 | text in, value out — `sort` | literal text | keep | keep |
+| 11 | interactive CLI — `npm init` | the terminal | show | show |
+| 12 | interactive + transcript — `psql` | terminal + **record it** | show + keep | show + keep |
+| 13 | drive a REPL — `bc` | a writable the caller is given | hand me a readable | keep |
+| 14 | prime then hand over — `sqlite3` | text **then** terminal | show | show |
+
+Between them these cover every disposition without repeating one for its own
+sake. Input: none, literal text, a readable the caller supplies, the
+terminal, a writable the caller is given, an ordered pair of sources, and a
+recording tap. Output: discard, keep, keep bounded from the front, keep
+bounded from the back, show, hand back a readable, and write to a supplied
+writable. `debug` is deliberately different from `output` in rows 3, 7, and
+9, so that no design may assume it simply follows along.
+
+Rows 6 and 7 are the ones that force a bound to carry an end as well as a
+size. Rows 9 and 13 are the ones that force supplying a stream and being
+handed one to be distinguishable. Row 12 is the only row needing a tap on
+input, and row 14 the only row needing ordered sources; both are cheap to
+drop if a design can only buy them at a high price, and that trade should be
+made explicitly rather than by forgetting they exist.
+
 ### A `Process` is a source of its own output
 
 `Process` implements `Symbol.asyncIterator`, yielding stdout chunks:
