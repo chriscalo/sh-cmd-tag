@@ -12,7 +12,14 @@ tags. It **is** the library's asynchronous execution engine: `sh` and `cmd`
 build a command string and return a `Process`. There is one engine, not two.
 
 Platform support is POSIX — macOS and Linux. Windows is out of scope; see
-[Shell selection and platform](#shell-selection-and-platform).
+[Shell selection and platform](#shell-selection-and-platform). The supported
+runtime floor is **Node 22**, the oldest line still in active maintenance;
+Node 18 reached end of life in April 2025 and testing an unpatched runtime
+sits badly with a security-sensitive library.
+
+`1.0.0` is a semver commitment: the surface described here stays compatible
+until a major bump. That is why the questionable parts are being settled now
+rather than shipped and regretted.
 
 ## Why this class exists
 
@@ -276,12 +283,84 @@ class Process {
 | `input`     | —       | String, stream, or `true` to inherit stdin       |
 | `output`    | `false` | Forward stdout to the parent's stdout            |
 | `debug`     | `false` | Forward stderr to the parent's stderr            |
-| `color`     | —       | Preserve ANSI color in the child                 |
+| `color`     | —       | `true` sets `FORCE_COLOR`, `false` sets `NO_COLOR`|
+| `timeout`   | —       | Milliseconds before the process is stopped       |
+| `graceMs`   | `5000`  | Wait between `SIGTERM` and `SIGKILL` on timeout  |
 | `env`       | —       | Environment variables, merged over `process.env` |
 | `cwd`       | —       | Working directory                                |
 
 `sync` is not a `Process` option. Synchronous execution bypasses this class
 entirely — see below.
+
+## Stopping a process
+
+Node exposes `child.kill(signal)` and nothing else, which means a caller has
+to know what `SIGTERM` and `SIGKILL` mean before they can stop anything. The
+vocabulary that already explains itself comes from containers, where the words
+are settled: `docker stop` sends `SIGTERM`, waits, then escalates to
+`SIGKILL`; `docker kill` sends `SIGKILL` outright. Kubernetes and systemd use
+the same shape with different grace periods — 30s and 90s respectively.
+
+So this class borrows that vocabulary rather than inventing one:
+
+```javascript
+await proc.stop();      // SIGTERM → grace period → SIGKILL if still alive
+await proc.kill();      // SIGKILL immediately, no cleanup
+proc.signal("SIGHUP");  // raw escape hatch, explicit about what it is
+```
+
+`stop()` resolves once the process has actually exited, so a caller can await
+a clean shutdown. `kill()` resolves once the kernel has reaped it.
+
+### Timeouts
+
+`timeout` is the same escalation on a clock, which is what every system that
+implements timeouts does:
+
+```javascript
+await sh({ timeout: 30_000 })`npm test`;
+// 30s → SIGTERM → graceMs → SIGKILL → rejects
+```
+
+The rejection is a `ProcessError` with `timedOut: true`, carrying whatever
+output was captured before the process was stopped — a timeout is a failure
+with evidence, not a blank one. `graceMs` defaults to 5000. There is no
+default timeout, matching Node.
+
+`.safe` applies here as everywhere: a timed-out process under `throw: false`
+resolves a `ProcessResult` with `ok: false` and `.error.timedOut` set.
+
+## Live mode
+
+`.live` forwards stdout and stderr to the parent while still capturing both,
+and does **not** inherit stdin. It is the gap between a plain call, which
+captures silently, and `.interactive`, which also hands the child the parent's
+keyboard:
+
+| Mode            | stdin inherited | output forwarded | captured |
+| --------------- | --------------- | ---------------- | -------- |
+| plain           | no              | no               | yes      |
+| `.live`         | no              | yes              | yes      |
+| `.interactive`  | yes             | yes              | yes      |
+
+It is a configuration alias — `{ output: true, debug: true }` — not a separate
+execution path, and it composes with the other chainables (`sh.safe.live`,
+`sh.live({ timeout: 60_000 })`).
+
+### Color in live mode
+
+Forwarding hands the child a pipe rather than a terminal, and colour-aware
+tools check exactly that before emitting ANSI. So live output is *not*
+automatically coloured, and the library does not force it to be: `color`
+unset leaves the child to decide from its own environment.
+
+`color: true` sets `FORCE_COLOR=1` in the child environment, the Node
+ecosystem's convention, honoured by chalk, npm, jest, and vitest. `color:
+false` sets `NO_COLOR=1`, the cross-language convention from no-color.org.
+
+Captured output is **not** stripped of escape codes. No convention asks a
+process runner to rewrite a child's bytes, and a caller who forced colour on
+asked for what arrived.
 
 ## Integration with `sh` and `cmd`
 
@@ -389,3 +468,27 @@ issue rather than in a checklist file.
     constructor, including in combination.
 53. `.sync` returns a `ProcessResult` directly and constructs no `Process`.
 54. Every pre-existing test passes unmodified.
+
+**Lifecycle control**
+
+55. `stop()` sends `SIGTERM` and resolves once the process exits.
+56. `stop()` escalates to `SIGKILL` after `graceMs` if the process ignores
+    `SIGTERM`.
+57. `kill()` terminates immediately with `SIGKILL`.
+58. `signal(name)` delivers an arbitrary signal.
+59. Stopping an already-exited process is a no-op, not a throw.
+60. `timeout` stops a process at the deadline and rejects a `ProcessError`
+    with `timedOut: true`.
+61. A timed-out rejection carries the output captured before the stop.
+62. Under `throw: false`, a timeout resolves `ok: false` with
+    `.error.timedOut`.
+
+**Live mode and colour**
+
+63. `.live` forwards stdout and stderr while still capturing both.
+64. `.live` does not inherit stdin.
+65. `.live` composes with the other chainables.
+66. `color: true` sets `FORCE_COLOR` in the child environment.
+67. `color: false` sets `NO_COLOR` in the child environment.
+68. `color` unset adds neither variable.
+69. Captured output retains escape codes when colour was forced on.
