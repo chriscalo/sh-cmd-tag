@@ -252,6 +252,10 @@ class Process {
   start()            // idempotent, returns this
   pipe(stage)        // returns the pipeline so far
 
+  stop()             // terminate politely, escalating if ignored
+  kill()             // immediate, cannot be refused
+  interrupt()        // what Ctrl-C sends
+
   then(onOk, onErr)  // auto-starts; resolves ProcessResult
   catch(onErr)
   finally(onFinally)
@@ -304,13 +308,30 @@ the same shape with different grace periods — 30s and 90s respectively.
 So this class borrows that vocabulary rather than inventing one:
 
 ```javascript
-await proc.stop();      // SIGTERM → grace period → SIGKILL if still alive
-await proc.kill();      // SIGKILL immediately, no cleanup
-proc.signal("SIGHUP");  // raw escape hatch, explicit about what it is
+await proc.stop();       // terminate politely; escalate if ignored
+await proc.kill();       // immediate, cannot be refused
+await proc.interrupt();  // what Ctrl-C does
 ```
 
-`stop()` resolves once the process has actually exited, so a caller can await
-a clean shutdown. `kill()` resolves once the kernel has reaped it.
+| Method        | Signal            | Meaning                              |
+| ------------- | ----------------- | ------------------------------------ |
+| `stop()`      | TERM, then KILL   | Wind down; force only if it refuses  |
+| `kill()`      | KILL              | Die now, no cleanup possible         |
+| `interrupt()` | INT               | The same thing Ctrl-C sends          |
+
+Each resolves once the process has actually exited, so a caller can await a
+clean shutdown.
+
+**No raw signal method ships in `1.0.0`.** Two reasons, and the second is the
+decisive one. First, an escape hatch handing back `SIGHUP` strings would undo
+the renaming in the same breath — the point of these verbs is that a caller
+never has to learn signal semantics to stop a process. Second, semver:
+`1.0.0` freezes this surface, and adding `signal()` later is a minor bump
+while removing it would be a major one. So the small vocabulary ships, and a
+real request from someone who actually needs `SIGHUP` can drive the addition
+rather than speculation now.
+
+Stopping a pipeline stops every stage.
 
 ### Timeouts
 
@@ -326,6 +347,24 @@ The rejection is a `ProcessError` with `timedOut: true`, carrying whatever
 output was captured before the process was stopped — a timeout is a failure
 with evidence, not a blank one. `graceMs` defaults to 5000. There is no
 default timeout, matching Node.
+
+#### Timeouts in `.sync`
+
+`spawnSync` takes `timeout` natively, so synchronous timeouts are ordinary
+and `.sync` honours them. The escalation, however, is impossible: sending
+`SIGTERM`, waiting, then sending `SIGKILL` requires doing something while
+waiting, and a blocking call has no turn in which to do it. `spawnSync` gets
+to send exactly one signal at the deadline.
+
+So `.sync` sends **`SIGKILL`** at the deadline rather than `SIGTERM`, because
+a child that ignored `SIGTERM` would otherwise blow through the deadline and
+hang the call — the worst outcome in the one mode where the caller cannot
+intervene. `graceMs` is meaningless synchronously and is ignored. The result
+carries `timedOut: true` exactly as the asynchronous form does.
+
+The promise is therefore identical across modes — the deadline is enforced and
+the failure is labelled — while the mechanism differs because the modes
+genuinely differ. That asymmetry is documented rather than discovered.
 
 `.safe` applies here as everywhere: a timed-out process under `throw: false`
 resolves a `ProcessResult` with `ok: false` and `.error.timedOut` set.
@@ -354,9 +393,29 @@ tools check exactly that before emitting ANSI. So live output is *not*
 automatically coloured, and the library does not force it to be: `color`
 unset leaves the child to decide from its own environment.
 
+### How a child decides
+
+No central authority decides; each tool consults roughly the same ladder:
+
+1. **Is stdout a terminal?** Piped output means `isTTY` is false, and most
+   tools default colour off on the assumption that the bytes are being
+   captured rather than read. Forwarding creates exactly this situation.
+2. **Environment overrides** — `FORCE_COLOR` to emit anyway, `NO_COLOR` to
+   never emit.
+3. **The long tail** — `TERM=dumb`, CI detection, explicit `--color` flags.
+
+Measured against Node's own test runner: piped with no environment it emits
+no escape codes; with `FORCE_COLOR=1` it emits `^[[34m`.
+
 `color: true` sets `FORCE_COLOR=1` in the child environment, the Node
 ecosystem's convention, honoured by chalk, npm, jest, and vitest. `color:
 false` sets `NO_COLOR=1`, the cross-language convention from no-color.org.
+
+**Exactly one variable is ever set, never both.** Precedence between them is
+implementation-dependent: no-color.org recommends `NO_COLOR` win, but Node 24
+does the opposite — `FORCE_COLOR=1 NO_COLOR=1 node --test` still emits colour.
+Setting both would make the library's behaviour depend on which tool the
+caller happened to run.
 
 Captured output is **not** stripped of escape codes. No convention asks a
 process runner to rewrite a child's bytes, and a caller who forced colour on
@@ -471,24 +530,27 @@ issue rather than in a checklist file.
 
 **Lifecycle control**
 
-55. `stop()` sends `SIGTERM` and resolves once the process exits.
-56. `stop()` escalates to `SIGKILL` after `graceMs` if the process ignores
-    `SIGTERM`.
-57. `kill()` terminates immediately with `SIGKILL`.
-58. `signal(name)` delivers an arbitrary signal.
+55. `stop()` terminates politely and resolves once the process exits.
+56. `stop()` escalates to an unrefusable kill after `graceMs` if the process
+    ignores the polite request.
+57. `kill()` terminates immediately and unrefusably.
+58. `interrupt()` delivers the equivalent of Ctrl-C.
 59. Stopping an already-exited process is a no-op, not a throw.
-60. `timeout` stops a process at the deadline and rejects a `ProcessError`
+60. Stopping a pipeline stops every stage.
+61. `timeout` stops a process at the deadline and rejects a `ProcessError`
     with `timedOut: true`.
-61. A timed-out rejection carries the output captured before the stop.
-62. Under `throw: false`, a timeout resolves `ok: false` with
+62. A timed-out rejection carries the output captured before the stop.
+63. Under `throw: false`, a timeout resolves `ok: false` with
     `.error.timedOut`.
+64. `.sync` honours `timeout`, enforcing the deadline unrefusably and setting
+    `timedOut`.
 
 **Live mode and colour**
 
-63. `.live` forwards stdout and stderr while still capturing both.
-64. `.live` does not inherit stdin.
-65. `.live` composes with the other chainables.
-66. `color: true` sets `FORCE_COLOR` in the child environment.
-67. `color: false` sets `NO_COLOR` in the child environment.
-68. `color` unset adds neither variable.
-69. Captured output retains escape codes when colour was forced on.
+65. `.live` forwards stdout and stderr while still capturing both.
+66. `.live` does not inherit stdin.
+67. `.live` composes with the other chainables.
+68. `color: true` sets `FORCE_COLOR` in the child environment.
+69. `color: false` sets `NO_COLOR` in the child environment.
+70. `color` unset adds neither variable, and no state ever sets both.
+71. Captured output retains escape codes when colour was forced on.
