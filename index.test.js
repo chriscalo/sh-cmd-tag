@@ -2717,3 +2717,27 @@ test("a reused abort signal does not accumulate listeners", async () => {
   const expected = 0;
   assert.equal(actual, expected);
 });
+
+test("writing input to a command that never reads it does not crash",
+  async () => {
+    // A command may exit without reading stdin — `yes | head` is an ordinary
+    // idiom — and writing to the closed pipe raises EPIPE. That is the
+    // expected end of the conversation, not a failure worth propagating.
+    // This surfaced as an intermittent CI failure on Node 24 before it was
+    // ever reproduced locally, since it depends on how much gets written
+    // before the child exits.
+    const { cmd } = await import("./index.js");
+    
+    const result = await cmd.safe.input("x".repeat(500_000))`false`;
+    
+    assert.equal(result.ok, false);
+    assert.equal(result.error.code, 1);
+  });
+
+test("a shell pipeline whose reader exits early still succeeds", async () => {
+  const { sh } = await import("./index.js");
+  
+  const actual = (await sh`yes | head -2`).output;
+  const expected = "y\ny\n";
+  assert.equal(actual, expected);
+});

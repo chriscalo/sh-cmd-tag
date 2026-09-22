@@ -741,6 +741,18 @@ function buildEnvironment(config) {
 }
 
 /**
+ * Ignores the errors that mean "the reader has gone away", while leaving
+ * every other stream error to surface.
+ */
+function ignoreBrokenPipe(stream) {
+  stream.on("error", (error) => {
+    if (error.code !== "EPIPE" && error.code !== "ERR_STREAM_DESTROYED") {
+      throw error;
+    }
+  });
+}
+
+/**
  * Recursively freezes an object so a running process's configuration cannot
  * be mutated from under it.
  */
@@ -954,6 +966,13 @@ class Process {
       });
     }
     if (child.stdin) {
+      // A command is free to exit without reading its input — `yes | head`
+      // is an ordinary shell idiom — and writing to the closed pipe then
+      // raises EPIPE. That is the expected end of the conversation, not a
+      // failure of the command, so it is swallowed here rather than left to
+      // surface as an unhandled error and take the host down.
+      ignoreBrokenPipe(child.stdin);
+      ignoreBrokenPipe(this.#io.input);
       this.#io.input.pipe(child.stdin);
     }
   }
