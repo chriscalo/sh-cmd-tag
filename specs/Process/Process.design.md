@@ -220,6 +220,17 @@ The escape hatches need no new API:
 A mid-chain **stream** error propagates as that stage's failure rather than
 hanging the pipeline.
 
+### A finished stage closes what feeds it
+
+When a stage finishes, everything upstream is producing for nobody, so it is
+closed. Without that, `` sh`yes`.pipe`head -2` `` never ends: the producer is
+endless and nothing tells it that its consumer has gone. A shell sends
+SIGPIPE for the same reason.
+
+Those producers are closed deliberately, so they are not failures. Counting
+them would reintroduce the problem from the other side, reporting a killed
+`yes` as the reason a chain that did exactly what was asked "failed".
+
 ## Shell selection and platform
 
 A high-level process API should be one API, not one per host. Node's

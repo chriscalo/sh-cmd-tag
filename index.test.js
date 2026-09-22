@@ -2885,3 +2885,78 @@ test("a safe pipeline short-circuits too", async () => {
   const expected = { ok: false, stage: 0, promptly: true };
   assert.deepEqual(actual, expected, `took ${elapsed}ms`);
 });
+
+test("a pipe inside a command string keeps the shell's own semantics",
+  async () => {
+    // Turning on pipefail was tried and reverted: it reports 141 for
+    // `yes | head`, a correct idiom, so it would change the meaning of
+    // shell the caller wrote. A pipe() chain is where the strict rule
+    // applies, because that is the composition this library performs.
+    const { sh } = await import("./index.js");
+    
+    const actual = {
+      async: (await sh.safe`false | true`).ok,
+      sync: sh.sync.safe`false | true`.ok,
+    };
+    const expected = { async: true, sync: true };
+    assert.deepEqual(actual, expected);
+  });
+
+test("a finished stage closes the producers feeding it", async () => {
+  // Without this an endless producer never learns its consumer is gone,
+  // and the chain runs forever. A shell sends SIGPIPE; this is the
+  // equivalent, and the closed producer is not counted as a failure.
+  const { sh } = await import("./index.js");
+  
+  const result = await sh.safe`yes`.pipe`head -2`;
+  
+  const actual = { ok: result.ok, output: result.output };
+  const expected = { ok: true, output: "y\ny\n" };
+  assert.deepEqual(actual, expected);
+});
+
+test("a succeeding shell pipeline still succeeds", async () => {
+  const { sh } = await import("./index.js");
+  
+  const result = await sh`printf "a\nb\n" | grep b`;
+  
+  const actual = { ok: result.ok, output: result.output.trim() };
+  const expected = { ok: true, output: "b" };
+  assert.deepEqual(actual, expected);
+});
+
+test("an error from a caller's input stream does not strand the child",
+  async () => {
+    const { sh } = await import("./index.js");
+    const { Readable } = await import("node:stream");
+    const failing = new Readable({
+      read() { this.destroy(new Error("source failed")); },
+    });
+    
+    let timer;
+    const settled = await Promise.race([
+      sh.safe({ input: failing })`cat`.then(() => "settled"),
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve("hung"), 3000);
+      }),
+    ]).finally(() => clearTimeout(timer));
+    
+    const actual = settled;
+    const expected = "settled";
+    assert.equal(actual, expected);
+  });
+
+test("piping from a deferred process starts it", async () => {
+  // Without this the chain has no source: iterating it waits on output that
+  // can never arrive, because nothing ever ran.
+  const { sh } = await import("./index.js");
+  
+  let collected = "";
+  for await (const chunk of sh({ immediate: false })`echo deferred`.pipe`cat`) {
+    collected += chunk.toString();
+  }
+  
+  const actual = collected.trim();
+  const expected = "deferred";
+  assert.equal(actual, expected);
+});

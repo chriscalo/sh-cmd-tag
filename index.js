@@ -497,10 +497,11 @@ function runCommand(command, useShell, isSync, options) {
   };
   
   if (useShell) {
-    // Use shell execution - pass the full command to spawn with shell: true
+    // The same selected shell as the asynchronous path, so sync and async
+    // agree about what a command means.
     cmd = command;
     args = [];
-    spawnOptions.shell = true;
+    spawnOptions.shell = SELECTED_SHELL;
   } else {
     // Parse command for direct execution
     // Simple parsing that handles basic quoted arguments
@@ -680,6 +681,8 @@ function selectShell() {
   return "/bin/sh";
 }
 
+const SELECTED_SHELL = selectShell();
+
 const DURATION_PATTERN = /^(\d+(?:\.\d+)?)(ms|s|m|h)$/;
 const DURATION_UNITS = { ms: 1, s: 1000, m: 60000, h: 3600000 };
 
@@ -800,7 +803,7 @@ class Process {
     toMilliseconds(this.#config.timeout, "timeout");
     toMilliseconds(this.#config.gracePeriod, "gracePeriod");
     
-    this.#shell = selectShell();
+    this.#shell = SELECTED_SHELL;
     
     const { promise, resolve, reject } = Promise.withResolvers();
     this.#promise = promise;
@@ -848,6 +851,14 @@ class Process {
    */
   get config() {
     return this.#config;
+  }
+  
+  /**
+   * Gets whether this process has finished, either way.
+   * @returns {boolean} True once the result is known
+   */
+  get settled() {
+    return this.#settled;
   }
   
   /**
@@ -1035,6 +1046,13 @@ class Process {
       return;
     }
     if (isStream(input)) {
+      // A source the caller owns can fail, and without a listener that is an
+      // unhandled error event. Closing both ends means the child sees EOF
+      // rather than waiting forever for input that will never arrive.
+      input.on("error", () => {
+        this.#io.input.destroy();
+        this.#childProcess?.stdin?.destroy();
+      });
       input.pipe(this.#io.input);
     }
   }
@@ -1281,6 +1299,7 @@ class Pipeline {
   #stages = [];
   #streamCompletions = new Map();
   #tornDown = false;
+  #closedProducers = new Set();
   
   constructor(source) {
     this.#stages.push(source);
@@ -1325,6 +1344,13 @@ class Pipeline {
     }
     
     source.pipe(next instanceof Process ? next.input : next);
+    // Piping is a commitment to run: without this a deferred source never
+    // starts, and iterating the chain waits on output that cannot arrive.
+    for (const stage of this.#stages) {
+      if (stage instanceof Process) {
+        stage.start();
+      }
+    }
     this.#stages.push(next);
     
     if (!(next instanceof Process)) {
@@ -1378,6 +1404,7 @@ class Pipeline {
     // the earliest failure, so the original cause is what gets reported.
     for (const stage of this.#stages) {
       if (stage instanceof Process) {
+        const index = this.#stages.indexOf(stage);
         stage.then(
           // A safe stage resolves a failed result rather than rejecting, so
           // watching only for rejections would leave `.safe` chains waiting
@@ -1385,6 +1412,8 @@ class Pipeline {
           (result) => {
             if (result && result.ok === false) {
               this.#teardown();
+            } else {
+              this.#closeProducersFor(index);
             }
           },
           () => this.#teardown(),
@@ -1406,7 +1435,8 @@ class Pipeline {
       }),
     );
     
-    const failed = outcomes.find((outcome) => outcome.error);
+    const failed = outcomes.find((outcome) =>
+      outcome.error && !this.#closedProducers.has(outcome.stage));
     if (failed) {
       const { error } = failed;
       error.stage = failed.index;
@@ -1417,7 +1447,8 @@ class Pipeline {
     }
     
     const withResults = outcomes.filter((outcome) => outcome.result);
-    const unsuccessful = withResults.find((outcome) => !outcome.result.ok);
+    const unsuccessful = withResults.find((outcome) =>
+      !outcome.result.ok && !this.#closedProducers.has(outcome.stage));
     if (unsuccessful) {
       // Safe stages resolve a failed result rather than rejecting, so they
       // never pass through the branch above — without this, a safe pipeline
@@ -1454,6 +1485,20 @@ class Pipeline {
       yield chunk;
     }
     await this.#settle();
+  }
+  
+  #closeProducersFor(index) {
+    // A stage that has finished is not reading any more, so everything
+    // upstream of it is producing for nobody. A shell sends SIGPIPE here;
+    // `yes | head -2` ends instead of running forever. These are closed
+    // deliberately, so they are not failures — see #settle.
+    for (let earlier = 0; earlier < index; earlier++) {
+      const stage = this.#stages[earlier];
+      if (stage instanceof Process && !stage.settled) {
+        this.#closedProducers.add(stage);
+        stage.kill();
+      }
+    }
   }
   
   #teardown() {
