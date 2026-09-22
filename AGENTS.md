@@ -1,8 +1,7 @@
 # Agent instructions
 
 This is the single behavioural source for anyone — human or agent — working
-in this repository. It replaces the former `CLAUDE.md` and
-`.github/copilot-instructions.md`, which restated it and drifted out of date.
+in this repository.
 
 For what the library is, read [README.md](README.md). For how code should
 look, read [STYLE.md](STYLE.md). For how it is designed, read the design

@@ -563,10 +563,11 @@ test("sh supports glob patterns", async () => {
   await cmd`touch test-glob-file.txt`;
   
   try {
-    const shResult = await sh`echo test-glob-*.txt`;
-    // sh should expand the glob
-    assert.ok(shResult.ok);
-    assert.ok(shResult.output.includes("test-glob-file.txt"));
+    const result = await sh`echo test-glob-*.txt`;
+    
+    const actual = { ok: result.ok, expanded: result.output.trim() };
+    const expected = { ok: true, expanded: "test-glob-file.txt" };
+    assert.deepEqual(actual, expected);
   } finally {
     await cmd`rm -f test-glob-file.txt`;
   }
