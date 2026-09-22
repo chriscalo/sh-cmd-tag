@@ -272,8 +272,21 @@ class Process {
   `debug` — unless `throw: false`, which resolves a `ProcessResult` with
   `.error` set instead.
 - A spawn failure surfaces through the child's `error` event as a
-  `ProcessError`, with a missing command mapped to exit code `127`, matching
-  shell convention.
+  `ProcessError` whose `code` is the errno string — `"ENOENT"` for a missing
+  command — and whose message is Node's own (`spawn foo ENOENT`).
+
+  An earlier draft of this document said a missing command maps to exit code
+  `127`, inherited from `architecture.md` and never checked. It is wrong, and
+  the build is what proved it: `.sync` has always reported `"ENOENT"` here,
+  so mapping the asynchronous path to `127` would make the two disagree about
+  the same failure. 127 does appear, but from the shell rather than from us —
+  when `shell: true`, the shell reports "command not found" as exit 127 and
+  never raises an `error` event at all.
+
+- A nonzero exit produces the message `Command failed with exit code N`, with
+  the child's trimmed stderr appended after a colon when there is any. That
+  is what makes a "command not found" failure name the command that was not
+  found, rather than reporting a bare number.
 - `config` is deep-frozen, including nested objects, so a caller cannot mutate
   a running process's configuration.
 
@@ -619,7 +632,8 @@ issue rather than in a checklist file.
 17. `throw: false` resolves a `ProcessResult` with `.error` set.
 18. `catch` behaves as the Promise analogue.
 19. `finally` behaves as the Promise analogue.
-20. A missing command surfaces a `ProcessError` with code `127`.
+20. A spawn failure surfaces a `ProcessError` carrying the errno string as
+    its code, agreeing with `.sync`.
 21. `cwd` is honored.
 22. `env` is merged over `process.env`.
 

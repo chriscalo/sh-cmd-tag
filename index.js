@@ -217,108 +217,6 @@ function executeSyncCommand(cmd, args, spawnOptions, inputData, options) {
 }
 
 // Asynchronous execution
-async function executeAsyncCommand(cmd, args, spawnOptions, inputData, 
-                                   options) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, spawnOptions);
-    
-    // Collect chunks as Buffers for proper streaming and final assembly
-    const outputChunks = [];
-    const debugChunks = [];
-    
-    // Handle stdout: pipe for live output + collect chunks for capture
-    if (child.stdout) {
-      if (options.output) {
-        // Stream immediately for real-time output
-        child.stdout.pipe(process.stdout);
-      }
-      child.stdout.on("data", (chunk) => {
-        // Always collect chunks for final result
-        outputChunks.push(chunk);
-      });
-    }
-    
-    // Handle stderr: pipe for live debug + collect chunks for capture  
-    if (child.stderr) {
-      if (options.debug) {
-        // Stream immediately for real-time debug output
-        child.stderr.pipe(process.stderr);
-      }
-      child.stderr.on("data", (chunk) => {
-        // Always collect chunks for final result
-        debugChunks.push(chunk);
-      });
-    }
-    
-    // Handle input
-    if (inputData && child.stdin) {
-      if (isStream(inputData)) {
-        inputData.pipe(child.stdin);
-      } else if (typeof inputData === "string") {
-        child.stdin.write(inputData);
-        // If interactive mode, keep stdin open for parent piping
-        if (options.input !== true) {
-          child.stdin.end();
-        }
-      }
-    }
-    
-    // After writing data, if interactive mode is enabled, pipe parent stdin
-    if (options.input === true && child.stdin) {
-      process.stdin.pipe(child.stdin);
-    }
-    
-    child.on("error", (error) => {
-      // Assemble final output from chunks
-      const output = Buffer.concat(outputChunks).toString("utf-8");
-      const debug = Buffer.concat(debugChunks).toString("utf-8");
-      
-      const processError = new ProcessError({
-        message: error.message,
-        code: error.code,
-        output,
-        debug,
-      });
-      if (options.throw !== false) {
-        reject(processError);
-      } else {
-        resolve(new ProcessResult(false, processError, output, debug));
-      }
-    });
-    
-    child.on("close", (code) => {
-      // Assemble final output from chunks using Buffer.concat()
-      const output = Buffer.concat(outputChunks).toString("utf-8");
-      const debug = Buffer.concat(debugChunks).toString("utf-8");
-      
-      if (code === 0) {
-        resolve(new ProcessResult({ ok: true, error: undefined, output, 
-                                    debug }));
-      } else {
-        // Create a more informative error message
-        let errorMessage = `Command failed with exit code ${code}`;
-        if (debug && debug.trim()) {
-          // Include stderr information in the error message for better
-          // diagnostics
-          errorMessage += `: ${debug.trim()}`;
-        }
-        
-        const error = new ProcessError({
-          message: errorMessage,
-          code,
-          output,
-          debug,
-        });
-        if (options.throw !== false) {
-          reject(error);
-        } else {
-          resolve(new ProcessResult({ ok: false, error, output, debug }));
-        }
-      }
-    });
-  });
-}
-
 function objectToCLIFlags(obj) {
   return toFlagDescriptors(obj)
     .filter(shouldIncludeFlag)
@@ -628,9 +526,14 @@ function runCommand(command, useShell, isSync, options) {
   
   if (isSync) {
     return executeSyncCommand(cmd, args, spawnOptions, inputData, options);
-  } else {
-    return executeAsyncCommand(cmd, args, spawnOptions, inputData, options);
   }
+  
+  return new Process(command, {
+    ...options,
+    shell: useShell,
+    cwd: workingDir,
+    input: inputData ?? options.input,
+  });
 }
 
 // Add chainable properties using getters
@@ -820,6 +723,14 @@ function deepFreeze(value) {
   if (value === null || typeof value !== "object" || Object.isFrozen(value)) {
     return value;
   }
+  // Only plain objects and arrays are frozen. A caller may pass a live
+  // object — a stream as `input`, an AbortSignal — and freezing that breaks
+  // it: a frozen Readable cannot push to its own internal buffer.
+  const proto = Object.getPrototypeOf(value);
+  const isPlain = proto === Object.prototype || proto === null;
+  if (!isPlain && !Array.isArray(value)) {
+    return value;
+  }
   for (const key of Object.getOwnPropertyNames(value)) {
     deepFreeze(value[key]);
   }
@@ -846,6 +757,7 @@ class Process {
   #timeoutTimer;
   #outputChunks = [];
   #debugChunks = [];
+  #inheritedStdin = false;
   
   /**
    * Creates a new Process instance.
@@ -961,14 +873,22 @@ class Process {
   }
   
   #spawn() {
-    this.#childProcess = spawn(this.#commandString, {
-      shell: this.#config.shell === false ? false : this.#shell,
-      cwd: this.#config.cwd,
-      env: buildEnvironment(this.#config),
-      stdio: ["pipe", "pipe", "pipe"],
-    });
+    const useShell = this.#config.shell !== false;
+    const parts = useShell ? null : parseCommand(this.#commandString.trim());
+    
+    this.#childProcess = spawn(
+      useShell ? this.#commandString : parts[0],
+      useShell ? [] : parts.slice(1),
+      {
+        shell: useShell ? this.#shell : false,
+        cwd: this.#config.cwd,
+        env: buildEnvironment(this.#config),
+        stdio: ["pipe", "pipe", "pipe"],
+      },
+    );
     
     this.#bridgeStreams();
+    this.#connectInput();
     this.#settleOn(this.#childProcess);
     this.#armTimeout();
   }
@@ -999,11 +919,38 @@ class Process {
     }
   }
   
+  #connectInput() {
+    const { input } = this.#config;
+    if (input === undefined || input === null || input === false) {
+      return;
+    }
+    if (input === true) {
+      process.stdin.pipe(this.#io.input);
+      this.#inheritedStdin = true;
+      return;
+    }
+    if (typeof input === "string") {
+      this.#io.input.end(input);
+      return;
+    }
+    if (isStream(input)) {
+      input.pipe(this.#io.input);
+    }
+  }
+  
   #settleOn(child) {
     const finish = (error) => {
       if (this.#settled) return;
       this.#settled = true;
       clearTimeout(this.#timeoutTimer);
+      
+      // An inherited stdin holds the event loop open long after the child is
+      // gone, so release it the moment the process settles.
+      if (this.#inheritedStdin) {
+        process.stdin.unpipe(this.#io.input);
+        process.stdin.pause();
+        this.#inheritedStdin = false;
+      }
       
       const output = Buffer.concat(this.#outputChunks).toString();
       const debug = Buffer.concat(this.#debugChunks).toString();
@@ -1026,8 +973,7 @@ class Process {
     child.on("error", (err) => {
       finish(new ProcessError({
         message: err.message,
-        // A missing command is exit code 127 by shell convention.
-        code: err.code === "ENOENT" ? 127 : (err.errno ?? 1),
+        code: err.code,
         output: "",
         debug: "",
       }));
@@ -1038,10 +984,17 @@ class Process {
         finish(null);
         return;
       }
+      // stderr is appended when present, which is what makes a "command not
+      // found" failure name the command that was not found.
+      const trimmedDebug = Buffer.concat(this.#debugChunks).toString().trim();
+      let message = this.#timedOut
+        ? `Command timed out: ${this.#commandString}`
+        : `Command failed with exit code ${code}`;
+      if (!this.#timedOut && trimmedDebug) {
+        message += `: ${trimmedDebug}`;
+      }
       const error = new ProcessError({
-        message: this.#timedOut
-          ? `Command timed out: ${this.#commandString}`
-          : `Command failed with exit code ${code}`,
+        message,
         code: code === null ? 128 : code,
         output: "",
         debug: "",
