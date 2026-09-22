@@ -1885,9 +1885,13 @@ test("exposed streams exist before the process starts", async () => {
   const { Process } = await import("./index.js");
   const proc = new Process("echo hello", { immediate: false });
   
-  assert.ok(proc.output instanceof Readable);
-  assert.ok(proc.debug instanceof Readable);
-  assert.ok(proc.input instanceof Writable);
+  const actual = {
+    output: proc.output instanceof Readable,
+    debug: proc.debug instanceof Readable,
+    input: proc.input instanceof Writable,
+  };
+  const expected = { output: true, debug: true, input: true };
+  assert.deepEqual(actual, expected);
 });
 
 // --- streams and lifecycle -------------------------------------------------
@@ -1980,8 +1984,12 @@ test("config is frozen all the way down", async () => {
     env: { NESTED: "value" },
   });
   
-  assert.ok(Object.isFrozen(proc.config));
-  assert.ok(Object.isFrozen(proc.config.env));
+  const actual = {
+    config: Object.isFrozen(proc.config),
+    env: Object.isFrozen(proc.config.env),
+  };
+  const expected = { config: true, env: true };
+  assert.deepEqual(actual, expected);
 });
 
 // --- result semantics ------------------------------------------------------
@@ -1994,7 +2002,10 @@ test("catch and finally behave as Promise analogues", async () => {
   
   let ran = false;
   await new Process("echo hello").finally(() => { ran = true; });
-  assert.ok(ran);
+  
+  const actual = ran;
+  const expected = true;
+  assert.equal(actual, expected);
 });
 
 test("cwd is honoured", async () => {
@@ -2035,7 +2046,9 @@ test("stop escalates when the process ignores the polite request", async () => {
   await proc.stop({ gracePeriod: "200ms" });
   const elapsed = Date.now() - started;
   
-  assert.ok(elapsed < 3000, `escalation took ${elapsed}ms`);
+  const actual = elapsed < 3000;
+  const expected = true;
+  assert.equal(actual, expected, `escalation took ${elapsed}ms`);
 });
 
 test("kill terminates immediately", async () => {
@@ -2205,12 +2218,23 @@ test("iterating a process yields its stdout", async () => {
 
 test("iterating a failing command throws at the end", async () => {
   const { sh } = await import("./index.js");
+  let yielded = "";
   
-  await assert.rejects(async () => {
-    for await (const chunk of sh`echo partial; exit 4`) {
-      assert.ok(chunk);
-    }
-  });
+  await assert.rejects(
+    async () => {
+      for await (const chunk of sh`echo partial; exit 4`) {
+        yielded += chunk.toString();
+      }
+    },
+    (error) => {
+      // The chunks before the failure are still delivered; the throw
+      // arrives at the end rather than replacing them.
+      const actual = { yielded: yielded.trim(), code: error.code };
+      const expected = { yielded: "partial", code: 4 };
+      assert.deepEqual(actual, expected);
+      return true;
+    },
+  );
 });
 
 test("awaiting after iterating still gives a complete result", async () => {
@@ -2242,7 +2266,6 @@ test("abandoning iteration early does not leave the child running",
     const proc = sh`sh -c ${loop}`;
     
     for await (const chunk of proc) {
-      assert.ok(chunk);
       break;
     }
     
@@ -2318,8 +2341,9 @@ test("a chain whose stages all succeed resolves the last result",
     
     const result = await sh`echo hello`.pipe`tr a-z A-Z`;
     
-    assert.ok(result.ok);
-    assert.equal(result.output.trim(), "HELLO");
+    const actual = { ok: result.ok, output: result.output.trim() };
+    const expected = { ok: true, output: "HELLO" };
+    assert.deepEqual(actual, expected);
   });
 
 test("pipe accepts a writable stream as a stage", async () => {
@@ -2361,8 +2385,9 @@ test("a transform stage feeds a command stage", async () => {
   );
   const raw = "hello hello hello".length;
   
-  assert.ok(compressed > 0);
-  assert.notEqual(compressed, raw);
+  const actual = { produced: compressed > 0, sameAsRaw: compressed === raw };
+  const expected = { produced: true, sameAsRaw: false };
+  assert.deepEqual(actual, expected);
 });
 
 test("iterating a chain yields the last stage's output", async () => {
@@ -2393,9 +2418,9 @@ test("stopping a pipeline stops every stage", async () => {
   
   await chain.stop();
   
-  for (const stage of chain.stages) {
-    assert.ok(stage.started);
-  }
+  const actual = chain.stages.map((stage) => stage.started);
+  const expected = chain.stages.map(() => true);
+  assert.deepEqual(actual, expected);
 });
 
 // --- live mode -------------------------------------------------------------
@@ -2460,8 +2485,12 @@ test("sh and cmd return Process instances", async () => {
   const shProc = sh`echo hello`;
   const cmdProc = cmd`echo hello`;
   
-  assert.ok(shProc instanceof Process);
-  assert.ok(cmdProc instanceof Process);
+  const actual = {
+    sh: shProc instanceof Process,
+    cmd: cmdProc instanceof Process,
+  };
+  const expected = { sh: true, cmd: true };
+  assert.deepEqual(actual, expected);
   
   await shProc;
   await cmdProc;
@@ -2483,8 +2512,12 @@ test("sync still returns a ProcessResult directly", async () => {
   
   const result = sh.sync`echo sync`;
   
-  assert.ok(result instanceof ProcessResult);
-  assert.ok(!(result instanceof Process));
+  const actual = {
+    isResult: result instanceof ProcessResult,
+    isProcess: result instanceof Process,
+  };
+  const expected = { isResult: true, isProcess: false };
+  assert.deepEqual(actual, expected);
 });
 
 test("commands run in the caller's working directory, not the library's",
@@ -2544,7 +2577,9 @@ test("sync honours timeout, enforcing the deadline with an immediate kill",
     );
     
     const elapsed = Date.now() - started;
-    assert.ok(elapsed < 5000, `sync timeout took ${elapsed}ms`);
+    const actual = elapsed < 5000;
+    const expected = true;
+    assert.equal(actual, expected, `sync timeout took ${elapsed}ms`);
   });
 
 test("sync safe mode resolves a timeout instead of throwing", async () => {
@@ -2648,11 +2683,13 @@ test("ending iteration naturally does not stop a healthy process",
     try {
       const proc = sh`node ${script}`;
       for await (const chunk of proc) {
-        assert.ok(chunk);
+        void chunk;
       }
       const result = await proc;
       
-      assert.ok(result.ok);
+      const actual = result.ok;
+      const expected = true;
+      assert.equal(actual, expected);
     } finally {
       try { unlinkSync(script); } catch {}
     }
@@ -2689,7 +2726,9 @@ test("awaiting a chain that ends in a transform settles", async () => {
   
   const result = await sh`printf "hi"`.pipe(createGzip());
   
-  assert.ok(result.ok);
+  const actual = result.ok;
+  const expected = true;
+  assert.equal(actual, expected);
 });
 
 test("a safe pipeline still reports which stage failed", async () => {
@@ -2744,13 +2783,20 @@ test("a shell pipeline whose reader exits early still succeeds", async () => {
 
 test("an input stream error closes the child's stdin", async () => {
   // Destroying only the source leaves child.stdin open, so a command
-  // waiting for EOF runs forever and the process never settles.
+  // waiting for EOF runs forever and the process never settles. The
+  // assertion is that it settles at all; the previous version asserted
+  // `result !== undefined`, which is true of anything that returns.
   const { sh } = await import("./index.js");
   const proc = sh.safe`cat`;
   
   setTimeout(() => proc.input.destroy(new Error("boom")), 50);
   
-  const result = await proc;
+  const settled = await Promise.race([
+    proc.then(() => "settled"),
+    new Promise((resolve) => setTimeout(() => resolve("hung"), 3000)),
+  ]);
   
-  assert.ok(result !== undefined);
+  const actual = settled;
+  const expected = "settled";
+  assert.equal(actual, expected);
 });

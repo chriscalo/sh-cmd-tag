@@ -39,8 +39,13 @@ These are not preferences. Breaking one is a bug.
   found in the same minute it was caused costs nothing to fix.
 - **Strict TDD.** One behaviour, one test, failing first, then the minimal
   implementation. Work one test at a time.
-- Always name `actual` and `expected` in tests, so a failure message says
-  what was expected rather than leaving it to be inferred.
+- **Name `actual` and `expected` in tests.** Whenever a test compares values,
+  bind them to those names and assert on them, so a failure says what was
+  expected rather than leaving it to be inferred. Group several related
+  checks into one object and `assert.deepEqual` rather than firing a run of
+  bare assertions. A test whose assertion cannot fail — `assert.ok(result)`
+  on something that always returns — is worse than no test, because it
+  reports success for behaviour it never exercised.
 - **Do not rename files or functions** unless asked.
 - **Do not refactor** unless asked.
 - **Do not leave `TODO` comments** or speculative suggestions in the code. If
