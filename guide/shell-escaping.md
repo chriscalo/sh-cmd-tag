@@ -4,9 +4,17 @@ title: "Shell Escaping"
 
 # Shell Escaping
 
-Every value interpolated into an `sh` or `cmd` template is automatically escaped
-before it reaches the shell. This protects against shell injection: untrusted
-input can't break out of its argument and run arbitrary commands.
+Every value interpolated into an `sh` template is automatically escaped before it
+reaches the shell. This protects against shell injection: untrusted input can't
+break out of its argument and run arbitrary commands.
+
+::: info This page is about `sh`
+`cmd` runs a program directly instead of through a shell, and does not escape
+interpolated values at all — it splits the finished command string on
+whitespace. There is no shell to inject into, but a value containing spaces
+becomes several arguments. See [Interpolation](/guide/interpolation#strings) for
+the details.
+:::
 
 ## Automatic escaping
 

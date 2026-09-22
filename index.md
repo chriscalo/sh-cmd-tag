@@ -28,8 +28,8 @@ features:
   - icon: 🛡️
     title: Safe interpolation
     details: >-
-      Interpolated values are shell-escaped automatically, so untrusted input
-      can't break out of an argument.
+      Values interpolated into an sh command are shell-escaped automatically, so
+      untrusted input can't break out of an argument.
     link: /guide/shell-escaping
   - icon: 🧩
     title: Objects and arrays

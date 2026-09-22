@@ -9,6 +9,14 @@ enhanced control. Use it when you need to read a command's output as it arrives
 rather than waiting for it to finish. See the [Streaming Output](/guide/streaming)
 guide for a walkthrough.
 
+::: warning `Process` is not implemented yet
+The class, its constructor, its configuration, and its getters all behave as
+described below, but `start()` does not spawn a child process yet — it assigns
+placeholder streams that never emit or accept data. Treat this page as the
+intended API, not as behavior you can rely on today; track the implementation in
+[issue #31](https://github.com/chriscalo/sh-cmd-tag/issues/31).
+:::
+
 ## Constructor
 
 ```javascript
@@ -21,7 +29,7 @@ new Process(commandString, config?)
 ```javascript
 import { Process } from "@chriscalo/sh-cmd-tag";
 
-const process = new Process("npm run build");
+const build = new Process("npm run build");
 ```
 
 ### Configuration
@@ -35,8 +43,8 @@ Pass `{ immediate: false }` to construct the process without starting it, then
 call [`start()`](#start) yourself:
 
 ```javascript
-const process = new Process("npm test", { immediate: false });
-process.start();
+const tests = new Process("npm test", { immediate: false });
+tests.start();
 ```
 
 ## Properties
@@ -59,7 +67,7 @@ The process's standard output stream (stdout), or `null` before it starts.
 Iterate it to read output as it arrives:
 
 ```javascript
-for await (const chunk of process.output) {
+for await (const chunk of build.output) {
   console.log(chunk.toString());
 }
 ```
@@ -81,7 +89,7 @@ Starts the process execution. Calling `start()` on a process that has already
 started throws an error, so a process runs at most once:
 
 ```javascript
-const process = new Process("echo hi", { immediate: false });
-process.start();
-process.start(); // throws: already been started
+const greeting = new Process("echo hi", { immediate: false });
+greeting.start();
+greeting.start(); // throws: already been started
 ```

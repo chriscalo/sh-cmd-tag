@@ -55,8 +55,8 @@ information under `error`:
   debug: "ls: cannot access '/nonexistent/directory': No such file or directory\n",
   error: {
     name: "ProcessError",
-    message: "Command failed with exit code 1: ls: cannot access '/nonexistent/directory': No such file or directory",
-    code: 1,
+    message: "Command failed with exit code 2: ls: cannot access '/nonexistent/directory': No such file or directory",
+    code: 2,
     output: "",
     debug: "ls: cannot access '/nonexistent/directory': No such file or directory\n",
   },

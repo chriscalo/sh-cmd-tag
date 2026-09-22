@@ -16,11 +16,13 @@ markSafeString(str)
 ```
 
 Marks a string as safe so it is **not** shell-escaped when interpolated into an
-`sh` or `cmd` template. Use it only for trusted input you fully control — see
-the warning in [Shell Escaping](/guide/shell-escaping#opting-out-with-marksafestring).
+`sh` template. (`cmd` never escapes interpolated values, so marking a string
+safe changes nothing there — see [Interpolation](/guide/interpolation).) Use it
+only for trusted input you fully control — see the warning in
+[Shell Escaping](/guide/shell-escaping#opting-out-with-marksafestring).
 
 ```javascript
-import { markSafeString } from "@chriscalo/sh-cmd-tag";
+import { sh, markSafeString } from "@chriscalo/sh-cmd-tag";
 
 const safeArgs = markSafeString("-la --color=auto");
 await sh`ls ${safeArgs}`; // ls -la --color=auto

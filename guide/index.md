@@ -31,6 +31,8 @@ The package exposes two primary template tags:
   avoids shell parsing entirely.
 
 Both resolve to a [`ProcessResult`](/reference/utilities#processresult) and both
-support the same interpolation rules and chainable modifiers like
-[`.safe`](/guide/error-handling#safe-mode) and
-[`.sync`](/reference/sh#sync-execution).
+support the same chainable modifiers, like
+[`.safe`](/guide/error-handling#non-throwing-behavior-with-safe) and
+[`.sync`](/reference/sh#sync-execution). They differ in how interpolated values
+are escaped: `sh` quotes them, `cmd` does not — see
+[Interpolation](/guide/interpolation).

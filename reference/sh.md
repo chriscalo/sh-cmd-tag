@@ -45,9 +45,11 @@ Resolves to a `ProcessResult` after the command completes:
 
 ## Interpolation
 
-Both tags apply the same [interpolation rules](/guide/interpolation): strings are
-[shell-escaped](/guide/shell-escaping), objects expand into `--flag=value`
-pairs, and arrays expand into space-separated arguments.
+Both tags apply the same [interpolation rules](/guide/interpolation): objects
+expand into `--flag=value` pairs, and arrays expand into space-separated
+arguments. Escaping differs — `sh` [shell-escapes](/guide/shell-escaping)
+interpolated strings and array elements, while `cmd` inserts them as-is and then
+splits the finished command on whitespace.
 
 ```javascript
 const opts = { verbose: true, output: "file.txt" };

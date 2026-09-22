@@ -5,12 +5,13 @@ title: "Interpolation"
 # Interpolation
 
 Values interpolated into an `sh` or `cmd` template are converted to command-line
-text based on their type. Strings are escaped, objects become flags, and arrays
-become arguments. The same rules apply to both tags.
+text based on their type: strings become arguments, objects become flags, and
+arrays become argument lists. How much escaping is applied depends on the tag —
+`sh` quotes what it interpolates, `cmd` does not.
 
 ## Strings
 
-A string is inserted as a single, shell-escaped argument:
+With `sh`, a string is inserted as a single, shell-escaped argument:
 
 ```javascript
 const filename = "my file.txt";
@@ -26,6 +27,28 @@ touch 'my file.txt'
 
 See [Shell Escaping](/guide/shell-escaping) for the full details, including how
 to opt out for trusted input.
+
+::: warning `cmd` does not escape interpolated values
+`cmd` builds the command by stringifying values as-is, then splits the result on
+whitespace to get the argument list. A value containing a space therefore
+becomes *two* arguments rather than one:
+
+```javascript
+const filename = "my file.txt";
+await cmd`touch ${filename}`; // runs touch with ["my", "file.txt"]
+```
+
+Quote the placeholder yourself when a value may contain whitespace — the
+splitter honors quotes — or use `sh`, which escapes for you:
+
+```javascript
+await cmd`touch "${filename}"`; // runs touch with ["my file.txt"]
+```
+
+Because `cmd` never invokes a shell, an unescaped value can't inject a second
+command the way it could with `sh`; the failure mode is a mis-split argument,
+not shell injection.
+:::
 
 ## Objects become flags
 
@@ -48,8 +71,8 @@ concatenating flags.
 
 ## Arrays become arguments
 
-An array expands into multiple space-separated arguments, each escaped
-individually:
+An array expands into multiple space-separated arguments — escaped individually
+under `sh`, stringified as-is under `cmd`:
 
 ```javascript
 const files = ["file1.txt", "file2.txt"];
@@ -61,6 +84,9 @@ Which becomes:
 ```sh
 rm file1.txt file2.txt
 ```
+
+An element containing a space stays one argument under `sh` (`rm 'my file.txt'`)
+but splits into two under `cmd`, for the same reason a plain string does.
 
 ## Combining interpolations
 
@@ -79,6 +105,10 @@ eslint --verbose src test
 ```
 
 ::: info `sh` vs `cmd`
-Object and array interpolation work identically for `sh` and `cmd`. The only
-difference between the tags is whether the final command runs through a shell.
+Both tags build flags from objects and argument lists from arrays the same way,
+and both quote object *values* that contain spaces (`--name='my file.txt'`).
+They differ in whether the command runs through a shell, and in escaping: `sh`
+escapes every interpolated string and array element, `cmd` escapes none of them
+and splits the finished command on whitespace. Prefer `sh` when interpolating
+values that may contain spaces, quotes, or other separators.
 :::
