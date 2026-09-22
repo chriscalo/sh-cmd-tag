@@ -2791,10 +2791,16 @@ test("an input stream error closes the child's stdin", async () => {
   
   setTimeout(() => proc.input.destroy(new Error("boom")), 50);
   
+  let timer;
   const settled = await Promise.race([
     proc.then(() => "settled"),
-    new Promise((resolve) => setTimeout(() => resolve("hung"), 3000)),
-  ]);
+    new Promise((resolve) => {
+      // Cleared below: the losing timer would otherwise keep the runner
+      // alive for its full duration after the race is decided, adding three
+      // seconds to every run of the suite.
+      timer = setTimeout(() => resolve("hung"), 3000);
+    }),
+  ]).finally(() => clearTimeout(timer));
   
   const actual = settled;
   const expected = "settled";
