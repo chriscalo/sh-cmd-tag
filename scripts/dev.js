@@ -68,7 +68,7 @@ export function touch(path, time = new Date()) {
 
 /**
  * Starts the VitePress dev server and the content watchers.
- * @returns {{ child: import("node:child_process").ChildProcess, watchers: import("node:fs").FSWatcher[] }}
+ * @returns {object} The spawned `child` process and its `watchers`
  */
 function startDevServer() {
   // Spawn with an argument array (no shell) so nothing is re-parsed or
