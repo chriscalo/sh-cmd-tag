@@ -2,11 +2,46 @@
 
 ## Implementation Overview
 
-The sh/cmd utilities provide ergonomic shell command execution with these key features:
-- **Implementation**: `/index.js`
-- **Tests**: `/util/process.test.js`
-- **Features**: Streaming latency <50ms, color preservation, full API compliance
-- **Security**: Flag name validation and shell escaping with support for any number of leading dashes
+- **Implementation**: `index.js`
+- **Tests**: `index.test.js`, plus the `index.test.*-invoke.js` /
+  `index.test.*-emit.js` child-process fixture pairs
+- **Platforms**: POSIX — macOS and Linux. Windows is not supported; see
+  `specs/Process/Process.design.md` for why the escaping strategy makes that a
+  correctness question rather than an effort question.
+- **Dependencies**: none, permanently. This is a security-sensitive library
+  and its dependency surface stays empty.
+
+## Architecture
+
+Four layers, each owning one concern:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Template Literal API                     │
+│                 sh`command` / cmd`command`                  │
+│        factory pattern, chainable configuration             │
+└─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│              Security & Interpolation Layer                 │
+│    shell escaping · safe-string marking · object/array      │
+│              expansion · flag-name validation               │
+└─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                     Process Management                      │
+│     Process class · stream lifecycle · pipelines ·          │
+│              Result / Error construction                    │
+└─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                     Execution Engine                        │
+│         node:child_process spawn / spawnSync                │
+│            with a library-selected shell                     │
+└─────────────────────────────────────────────────────────────┘
+```
+
+The tags do not execute anything themselves: they build a command string and
+hand it to `Process`, which is the single asynchronous execution engine.
+`.sync` is the one path that bypasses `Process`, because a synchronous call
+cannot return a thenable. See `specs/Process/Process.design.md`.
 
 ---
 
@@ -683,6 +718,49 @@ const malicious = "file.txt && rm important.txt";
 await cmd`cat ${malicious}`;
 // Would try to cat a file literally named "file.txt && rm important.txt"
 ```
+
+### Threat model
+
+**Protected against:**
+
+- shell injection through template interpolation;
+- command injection through object keys used as CLI flags;
+- path traversal through malicious file paths;
+- quote breaking and escape-sequence attacks.
+
+**Attack surface:**
+
+- every template literal interpolation point;
+- object key names converted to flags;
+- array elements converted to arguments;
+- shell metacharacter handling.
+
+**Explicitly outside the model:** the contents of a command string the caller
+writes literally. `sh\`rm -rf /\`` does what it says; the library guarantees
+that *interpolated values* cannot escape their position, not that a
+hand-written command is wise.
+
+### Defense in depth
+
+1. **Input validation** — object keys and array elements are validated before
+   use, rejecting dangerous patterns outright.
+2. **Escape at source** — each value is escaped where it is converted for
+   shell use, never after composition.
+3. **Safe-string marking** — a private symbol tracks already-escaped strings,
+   so double-escaping cannot occur.
+4. **Context-aware processing** — quoted and unquoted positions are handled
+   according to their context.
+5. **Fail fast** — dangerous input is rejected immediately with a clear error
+   rather than silently sanitized.
+
+### Security boundaries
+
+| Boundary                              | Control                          |
+| ------------------------------------- | -------------------------------- |
+| user input → shell execution          | automatic escaping at each site  |
+| object keys → CLI flags               | strict validation, reject on bad |
+| array elements → arguments            | individual escaping per element  |
+| escaped parts → final command string  | safe composition, no re-escaping |
 
 ---
 

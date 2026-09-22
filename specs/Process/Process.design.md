@@ -1,790 +1,391 @@
-# Process Class Design Document
+# Process Class Design
 
-## Overview
+## Status
 
-This document outlines the design for adding a `Process` class that provides a
-clean interface to the underlying child process, including deferred execution,
-stream access, read-only access to the command config options, and the ability
-to await the process completion.
+This document is the single authority for `Process`. Where it previously
+contradicted itself or `Process.tasks.md`, those contradictions are resolved
+here and the rationale is recorded, so a later reader can tell a decision from
+an accident.
 
-## Key Design Clarifications
+`Process` is not an optional advanced interface bolted beside the template
+tags. It **is** the library's asynchronous execution engine: `sh` and `cmd`
+build a command string and return a `Process`. There is one engine, not two.
 
-### 1. Process as Thenable
+Platform support is POSIX — macOS and Linux. Windows is out of scope; see
+[Shell selection and platform](#shell-selection-and-platform).
 
-The Process class implements the Promise interface (`then()`, `catch()`, 
-`finally()`) to maintain backward compatibility:
+## Why this class exists
 
-All these patterns work identically - Process instances resolve to
-ProcessResult 
-when awaited, sync variants return ProcessResult directly, and error handling 
-remains unchanged.
+Before it, `sh` and `cmd` executed commands through inline promise-and-stream
+logic (`executeAsyncCommand()`), which meant a caller could only ever have the
+finished result. Anything else a caller might reasonably want — watching output
+as it arrives, writing to stdin, deciding when to start, composing commands
+into a pipeline, or asking what command is actually running — had nowhere to
+live.
+
+`Process` gives those a home without changing what existing code sees. Every
+current call site awaits a tag and reads a `ProcessResult`; a thenable
+`Process` that resolves the same `ProcessResult` satisfies that unchanged.
+
+## Design decisions
+
+Each decision below settles a question the earlier draft left open or answered
+twice.
+
+### `start()` is idempotent and returns `this`
+
+The earlier draft said `start()` was a safe no-op when already started, while
+the task list asserted it threw. Idempotent is correct, and not as a matter of
+taste:
+
+- The class **must** ensure-start internally, because both `then()` and
+  `pipe()` start a deferred process on demand. That primitive exists either
+  way. If the public `start()` throws instead, one operation has two
+  semantics.
+- "Already started" is the normal state, not a caller error. `immediate: true`
+  is the default and awaiting auto-starts, so a throwing `start()` forces
+  every caller holding a possibly-started process to write
+  `if (!proc.started) proc.start()` — which is the idempotent version,
+  hand-rolled at each call site.
+
+`start()` returns `this`, so it chains.
+
+### The exposed streams are created in the constructor and never null
+
+The earlier draft said both that stream getters "return `null` if child
+process not available" and that streams are "created in the constructor and
+remain stable." The second is correct; the first described the stub
+implementation rather than the design.
+
+Deferred start exists precisely so a caller can attach handlers and pipes
+*before* anything runs. Null getters would make the only reason for the
+feature impossible, and would force null checks on streams that are certain to
+exist. So:
+
+- `output`, `debug`, and `input` are `PassThrough` streams built in the
+  constructor.
+- They are identity-stable: the object a caller holds before `start()` is the
+  object that carries data after it.
+- `start()` spawns the child and bridges its stdio into those existing
+  streams. It does not replace them.
+
+Input written before start sits in the `PassThrough` buffer and flushes when
+the pipe to `child.stdin` opens. Output and debug stay silent until a child
+exists, because nothing writes into them until then.
+
+### A `Process` is a source of its own output
+
+`Process` implements `Symbol.asyncIterator`, yielding stdout chunks:
 
 ```javascript
-// Process resolves to ProcessResult
-const result1 = await sh`echo "hello"`;
-
-// Process resolves to ProcessResult with .error
-const result2 = await sh.safe`might-fail`;
-
-// Returns ProcessResult directly (no Process)
-const result3 = sh.sync`echo "world"`;
-
-// Error handling unchanged
-try {
-  await sh`exit 1`;
-} catch (error) {
-  // true
-  console.log(error instanceof ProcessError);
+for await (const chunk of sh`npm install`) {
+  process.stdout.write(chunk);
 }
-
-// Safe mode returns ProcessResult with error instead of rejecting
-const result = await sh.safe`exit 1`;
-console.log(result.ok); // false
-console.log(result.error instanceof ProcessError); // true
 ```
 
-### 2. Sync Variants Stay ProcessResult
+This is the shortest spelling and it does the most obvious thing. stdout is
+the default because it is what a caller wants when things go well; `debug` is
+there for stderr, and a failure already throws a `ProcessError` carrying
+stderr, so the stream you want on failure arrives without being asked for.
 
-Sync methods (`.sync`) bypass the Process class entirely and return 
-ProcessResult directly:
+Consequences, all specified rather than incidental:
 
-Both async and sync variants have identical result structure.
+- **Failure surfaces at the end of iteration.** If the command exits nonzero,
+  the loop throws the `ProcessError` when the stream ends. It does not finish
+  quietly having yielded partial output.
+- **Capture continues alongside iteration.** A later `await` still resolves a
+  complete `ProcessResult`.
+- **Abandoning the loop early does not leak.** Breaking out of a `for await`
+  must not leave the child unreaped.
+- **A consumed stream is not re-readable.** Iterating twice yields nothing the
+  second time, as with any Node stream.
+
+`Process` deliberately does **not** `extend Readable`. Inheriting Node's
+`pipe`, whose contract is to return its destination, would reintroduce the
+alternating return type that [Pipelines](#pipelines) exists to remove.
+
+### Forwarding to the parent's streams stays a config flag
+
+Iteration is for *consuming* output. Echoing a child's output to the parent's
+stdout and stderr is a separate concern, already implemented, and stays where
+it is: the `output` and `debug` flags, which are opt-in and absent from the
+defaults. `sh({ output: true })` and `sh.interactive` set them.
+
+That separation is why the iteration example above prints each chunk exactly
+once: a plain `sh\`cmd\`` captures without forwarding, so the loop body is the
+only writer.
+
+## Pipelines
+
+`pipe()` accepts a **stage** and returns **the pipeline so far**. A stage is
+either a command — template-tag or argv-array form — or any writable or
+transform stream.
 
 ```javascript
-// await converts Process to ProcessResult
-const asyncResult = await sh`echo "test"`;
-
-// Returns ProcessResult immediately
-const syncResult = sh.sync`echo "test"`;
+await proc.pipe`grep error`.pipe`head -5`;   // command → command
+await proc.pipe(gzip).pipe(file);            // transform → sink
+await proc.pipe(gzip).pipe`wc -c`;           // mixed
+for await (const line of proc.pipe`grep error`) { }
 ```
 
-### 3. Configuration Functions
+The returned handle is:
 
-Functions like `sh({options})` and chainable methods return configured 
-functions that create Process instances:
+- **awaitable** — settles when every stage is done: each process exited, each
+  stream finished;
+- **async-iterable** — over the last stage's output;
+- **pipeable** — continuing from the last stage.
 
-Both `sh({options})` and chainable methods (like `sh.safe`) create configured 
-functions. All Process instances resolve to ProcessResult when awaited.
+### Why the pipeline, and not the destination or the source
+
+This is the one place where following Node's convention would produce a worse
+API, so the reasoning is recorded rather than assumed. Take one line:
 
 ```javascript
-// sh({}) returns a function that creates Process with options
-const safeSh = sh({ throw: false });
-
-// Process with throw: false
-const process1 = safeSh`command1`;
-
-// Process with throw: false
-const process2 = safeSh`command2`;
-
-// Equivalent to:
-// Process with throw: false
-const process3 = sh.safe`command3`;
-
-// All resolve to ProcessResult
-const result1 = await process1;
-const result2 = await process2;
-const result3 = await process3;
+proc.pipe(gzip).pipe(file)
 ```
 
-## Current State
+**Returning the destination** (Node's `readable.pipe` contract) wires
+`stdout → gzip → file` correctly, but the value in hand is a *stream*: `await`
+on it is a no-op, and it cannot answer whether the command succeeded. Worse,
+when the stage is a command the natural return is a `Process` — so the return
+type depends on the argument type, and the meaning of the next `.pipe` in the
+chain changes with it.
 
-The existing implementation uses inline promise-based execution with manual
-stream handling spread across `executeAsyncCommand()` and
-`executeSyncCommand()` 
-functions (`index.js`:218-318, 152-215).
+**Returning the source** (`this`) keeps one return type and stays awaitable,
+but breaks the dataflow: the second call becomes `proc.pipe(file)`, so stdout
+goes to gzip *and*, separately, raw to file. `file` receives uncompressed
+bytes and gzip's output goes nowhere, while the line still reads like a
+three-stage chain.
 
-## New Process Class Architecture
+**Returning the pipeline** gives one return type regardless of stage kind,
+awaitability that means "all stages finished," iteration over the tail, and a
+dataflow that matches how the line reads.
 
-### Core Features
+### A pipeline succeeds only if every stage succeeds
 
-1. **Deferred Execution Control**: Optional immediate execution vs manual start
-2. **Stream Exposure**: Direct access to stdout, stderr, and stdin streams  
-3. **Process Introspection**: Read-only access to command and configuration
-4. **Thenable Interface**: Exposing a Promise-like interface
-
-### Class Definition
+`ProcessResult` is already a Result type — `ok`, `error`, `output`, `debug` —
+and composing Results conjoins them. So a pipeline is `ok` only when every
+stage is, and it short-circuits on the first failure, whose error carries
+per-stage detail.
 
 ```javascript
-import { PassThrough, Writable } from "node:stream";
+await sh`cat missing.txt`.pipe`wc -l`;
+// rejects with cat's ProcessError
+// NOT: resolves ok with output "0"
+```
 
-/**
- * Process class that encapsulates child process execution with streaming
- * output and enhanced control capabilities.
- */
+This is the algebra of the type the library already has, not a convention
+borrowed from shells. `set -o pipefail` is the shell arriving at the same
+conclusion for the same reason.
+
+The escape hatches need no new API:
+
+- `.safe` resolves a failed `ProcessResult` instead of rejecting;
+- `.catch()` substitutes a fallback value, since a `Process` is thenable;
+- `pipe` accepts the same config forms the tags do, so one stage can swallow
+  while the rest do not.
+
+A mid-chain **stream** error propagates as that stage's failure rather than
+hanging the pipeline.
+
+## Shell selection and platform
+
+A high-level process API should be one API, not one per host. Node's
+`shell: true` is not that: it resolves to `/bin/sh`, which is bash in POSIX
+mode on macOS and dash on Debian, Ubuntu, and Alpine. The difference is not
+cosmetic. Measured:
+
+```sh
+$ /bin/sh -c 'set -o pipefail; echo reached'
+reached                                        # exit 0
+
+$ dash -c 'set -o pipefail; echo reached'
+dash: 1: set: Illegal option -o pipefail       # exit 2, nothing ran
+```
+
+dash does not degrade; it aborts before the command runs. So the library
+**selects its shell** — `bash` when available, `/bin/sh` otherwise — rather
+than inheriting whatever the host ships. Three consequences:
+
+1. The same command means the same thing on macOS and Linux.
+2. Pipeline failure reporting is simply on, so `sh\`cat missing.txt | wc -l\``
+   obeys the same rule as a `pipe()` chain, with no flag for a caller to know
+   about. The rule holds at every boundary, whether the library composed the
+   pipeline or the shell did.
+3. The shell-dependent error text that the suite works around at
+   `index.test.js:74` becomes uniform.
+
+The selected shell is introspectable on the process, so a caller debugging an
+environment difference can see what ran.
+
+**Windows is not supported.** This is declared in `README.md`, in
+`package.json` via the `os` field, and in `AGENTS.md`, rather than left
+implicit. The reason is not effort but correctness: `shellEscape`
+(`index.js:23-41`) quotes with POSIX single quotes, which `cmd.exe` treats as
+ordinary characters. The library's central guarantee would therefore be a
+no-op there — `sh\`echo ${"x & calc.exe"}\`` would leave `&` live as a command
+separator. Supporting Windows means a second escaping strategy plus CI on a
+Windows runner, and until that exists, claiming support would be false.
+
+## Class surface
+
+```javascript
 class Process {
-  static #defaults = { immediate: true };
-  
-  #stdout = "";
-  #stderr = "";
-  #process;
-  #command;
-  #config;
-  #promise;
-  #resolve;
-  #reject;
-  #io;
-  #type;
-  #factory;
-  
-  constructor(commandString, config = {}, type = 'sh', factory = sh) {
-    this.#command = commandString;
-    this.#config = deepFreeze({ ...Process.#defaults, ...config });
-    this.#type = type;
-    this.#factory = factory;
-    
-    // Create stable streams available immediately
-    this.#io = {
-      output: new PassThrough(),
-      debug: new PassThrough(),
-      input: new PassThrough(),
-    };
-    
-    // Create promise and store resolvers immediately
-    const { promise, resolve, reject } = Promise.withResolvers();
-    this.#promise = promise;
-    this.#resolve = resolve;
-    this.#reject = reject;
-    
-    if (this.#config.immediate) {
-      this.#start();
-    }
-  }
-  
-  get command() {
-    return this.#command;
-  }
-  
-  get started() {
-    return Boolean(this.#process);
-  }
-  
-  get config() {
-    return this.#config;
-  }
-  
-  get output() {
-    return this.#io.output;
-  }
-  
-  get debug() {
-    return this.#io.debug;
-  }
-  
-  get input() {
-    return this.#io.input;
-  }
-  
-  pipe(...args) {
-    if (!this.started) {
-      this.start();
-    }
-    
-    if (isTemplateTagInvocation(...args)) {
-      // Use the same factory and inherit relevant config
-      const inheritedConfig = {
-        shell: this.#config.shell,
-        env: this.#config.env,
-        cwd: this.#config.cwd,
-      };
-      const nextProcess = this.#factory(inheritedConfig)(...args);
-      this.output.pipe(nextProcess.input);
-      return nextProcess;
-    }
-    
-    if (args[0] instanceof Writable) {
-      return this.output.pipe(args[0]);
-    }
-    
-    throw new TypeError("Expected writable stream or template literal");
-  }
-  
-  /**
-   * Manually start execution of a deferred process.
-   * Safe to call if already started.
-   * @returns {Process} Returns self for chaining
-   */
-  start() {
-    if (!this.started) {
-      this.#start();
-    }
-    return this;
-  }
-  
-  #start() {
-    const parts = parseCommand(this.#command.trim());
-    const cmd = parts[0];
-    const args = parts.slice(1);
-    
-    const spawnOptions = {
-      stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env, ...this.#config.env },
-      cwd: this.#config.cwd,
-      shell: this.#config.shell ?? true,
-    };
-    
-    this.#process = spawn(cmd, args, spawnOptions);
-    
-    this.#initStreams();
-    
-    this.#setupProcessHandlers();
-  }
-  
-  #initStreams() {
-    // Pipe process output to stable output stream
-    if (this.#process.stdout) {
-      this.#process.stdout.pipe(this.#io.output);
-      this.#process.stdout.on("data", (chunk) => {
-        if (this.#config.output !== false) {
-          process.stdout.write(chunk);
-        }
-        this.#stdout += chunk.toString();
-      });
-    }
-    
-    // Pipe process stderr to stable debug stream
-    if (this.#process.stderr) {
-      this.#process.stderr.pipe(this.#io.debug);
-      this.#process.stderr.on("data", (chunk) => {
-        if (this.#config.debug !== false) {
-          process.stderr.write(chunk);
-        }
-        this.#stderr += chunk.toString();
-      });
-    }
-    
-    // Pipe stable input stream to process stdin
-    if (this.#process.stdin) {
-      this.#io.input.pipe(this.#process.stdin);
-    }
-  }
-  
-  // Promise interface for await compatibility
-  // This makes Process thenable so 'await process' resolves to ProcessResult
-  then(resolve, reject) {
-    if (!this.started) {
-      this.#start();
-    }
-    
-    return this.#promise.then(resolve, reject);
-  }
-  
-  catch(reject) {
-    return this.then(null, reject);
-  }
-  
-  finally(onFinally) {
-    return this.then(
-      value => Promise.resolve(onFinally()).then(() => value),
-      reason => Promise.resolve(onFinally()).then(() => Promise.reject(reason)),
-    );
-  }
-  
-  #setupProcessHandlers() {
-    const onExit = (code, signal) => {
-      if (code === 0) {
-        this.#resolve(new ProcessResult({
-          ok: true,
-          error: null,
-          output: this.#stdout,
-          debug: this.#stderr
-        }));
-      } else {
-        const message = `Command failed with exit code ${code}`;
-        const error = new ProcessError({
-          message,
-          code,
-          output: this.#stdout,
-          debug: this.#stderr
-        });
-        
-        if (this.#config.throw !== false) {
-          this.#reject(error);
-        } else {
-          this.#resolve(new ProcessResult({
-            ok: false,
-            error,
-            output: this.#stdout,
-            debug: this.#stderr
-          }));
-        }
-      }
-    };
-    
-    const onError = (err) => {
-      const error = new ProcessError({
-        message: err.message,
-        code: err.code || "UNKNOWN",
-        output: this.#stdout,
-        debug: this.#stderr
-      });
-      
-      if (this.#config.throw !== false) {
-        this.#reject(error);
-      } else {
-        this.#resolve(new ProcessResult({
-          ok: false,
-          error,
-          output: this.#stdout,
-          debug: this.#stderr
-        }));
-      }
-    };
-    
-    this.#process.on("exit", onExit);
-    this.#process.on("error", onError);
-  }
-}
+  constructor(commandString, config = {})
 
-/**
- * Recursively freezes an object and all its nested properties
- */
-function deepFreeze(obj) {
-  if (obj === null || typeof obj !== "object") return obj;
-  
-  Object.getOwnPropertyNames(obj).forEach(prop => {
-    const value = obj[prop];
-    if (value && typeof value === "object") {
-      deepFreeze(value);
-    }
-  });
-  
-  return Object.freeze(obj);
-}
+  get command()      // string, the resolved command
+  get config()       // deep-frozen config object
+  get started()      // boolean
+  get shell()        // the selected shell, for introspection
 
-/**
- * Checks if a function was invoked as a tagged template literal.
- * A true template tag call provides a special `raw` property on the
- * first argument (the strings array).
- * @param {...any} args The arguments passed to the function.
- * @returns {boolean} True if the function was called as a tagged
- *   template literal.
- */
-function isTemplateTagInvocation(...args) {
-  const [strings] = args;
-  return Array.isArray(strings) && 'raw' in strings;
+  get output()       // PassThrough, stdout
+  get debug()        // PassThrough, stderr
+  get input()        // PassThrough, stdin
+
+  start()            // idempotent, returns this
+  pipe(stage)        // returns the pipeline so far
+
+  then(onOk, onErr)  // auto-starts; resolves ProcessResult
+  catch(onErr)
+  finally(onFinally)
+
+  [Symbol.asyncIterator]()   // yields stdout chunks
 }
 ```
 
-## New Configuration Options
+### Result and error semantics
 
-### `immediate` Option
+- Exit code `0` resolves a `ProcessResult` after both process close and stream
+  drain, so `output` is complete rather than racing the final chunk.
+- A nonzero exit rejects a `ProcessError` carrying the code, `output`, and
+  `debug` — unless `throw: false`, which resolves a `ProcessResult` with
+  `.error` set instead.
+- A spawn failure surfaces through the child's `error` event as a
+  `ProcessError`, with a missing command mapped to exit code `127`, matching
+  shell convention.
+- `config` is deep-frozen, including nested objects, so a caller cannot mutate
+  a running process's configuration.
 
-**Type**: `boolean`
-**Default**: `true`
-**Purpose**: Controls whether the process starts immediately upon creation
-or waits for manual execution.
+### Configuration
 
-```javascript
-// Immediate execution (current behavior, default)
-const process = sh`echo "hello"`;  // Starts immediately
+| Option      | Default | Meaning                                          |
+| ----------- | ------- | ------------------------------------------------ |
+| `immediate` | `true`  | Start on construction rather than on `start()`   |
+| `shell`     | `true`  | Run through the selected shell                   |
+| `throw`     | `true`  | Reject on failure; `false` resolves with `.error`|
+| `input`     | —       | String, stream, or `true` to inherit stdin       |
+| `output`    | `false` | Forward stdout to the parent's stdout            |
+| `debug`     | `false` | Forward stderr to the parent's stderr            |
+| `color`     | —       | Preserve ANSI color in the child                 |
+| `env`       | —       | Environment variables, merged over `process.env` |
+| `cwd`       | —       | Working directory                                |
 
-// Deferred execution (new capability)
-// Waits for process.start()
-const process = sh({ immediate: false })`echo "hello"`;
-```
+`sync` is not a `Process` option. Synchronous execution bypasses this class
+entirely — see below.
 
-## New API Methods
+## Integration with `sh` and `cmd`
 
-### Process Chaining
-
-#### `process.pipe(command)`
-**Type**: `Process | WritableStream` (returns new Process for chaining or
-destination stream)  
-**Purpose**: Pipe the process output to another command or stream destination.
-
-**Return Behavior**:
-- When piping to template literal parts: Returns new Process for chaining
-- When piping to stream: Returns the destination stream (Node.js standard
-  behavior)
-
-```javascript
-// Chainable process piping (returns Process)
-const result = await sh`cat data.txt`.pipe`grep "pattern"`.pipe`head -5`;
-
-// Pipe to stream (returns WritableStream)
-const writeStream = sh`cat large-file.txt`
-  .pipe(fs.createWriteStream("backup.txt"));
-writeStream.on("finish", () => console.log("Done"));
-```
-
-### Process Introspection
-
-#### `process.command`
-**Type**: `string` (read-only)  
-**Purpose**: Returns the resolved command string for debugging and logging.
+The tags build a command string and return a `Process`:
 
 ```javascript
-const process = sh`echo "hello ${name}"`;
-console.log(process.command);  // "echo \"hello world\""
+const proc = sh`echo ${name}`;        // a Process, started immediately
+const result = await proc;            // ProcessResult
+
+const deferred = sh({ immediate: false })`long-job`;
+deferred.output.on("data", onChunk);  // attach before anything runs
+await deferred.start();
 ```
 
-#### `process.config`
-**Type**: `object` (read-only copy)
-**Purpose**: Returns a copy of the process configuration to prevent mutation.
-
-```javascript
-const process = sh({ immediate: false, debug: true })`command`;
-console.log(process.config);  // { immediate: false, debug: true, ... }
-```
-
-### Stream Access
-
-#### `process.output`
-**Type**: `ReadableStream`
-**Purpose**: Direct access to stdout stream for advanced users. Available
-immediately upon Process creation, allowing setup of event handlers and
-piping before process starts. When process starts, this stream is internally
-connected to the child process stdout.
-
-#### `process.debug`
-**Type**: `ReadableStream`
-**Purpose**: Direct access to stderr stream for advanced users. Available
-immediately upon Process creation, allowing setup of event handlers and
-piping before process starts. When process starts, this stream is internally
-connected to the child process stderr.
-
-#### `process.input`
-**Type**: `WritableStream`
-**Purpose**: Direct access to stdin stream for advanced users. Available
-immediately upon Process creation, allowing setup of event handlers and
-piping before process starts. When process starts, this stream is internally
-connected to the child process stdin.
-
-**Stream Architecture**: Each Process instance maintains exposed streams
-that are created in the constructor and remain stable throughout the process
-lifecycle. When `start()` is called, these exposed streams are internally
-piped to/from the actual child process streams, ensuring seamless data flow
-while allowing pre-process setup.
-
-**Input Buffering**: Data written to the `input` stream before process
-start is automatically buffered and flushed to the child process stdin once
-the process begins execution. This allows users to write input data before
-calling `start()`. The input stream avoids eagerly consuming data when
-possible, only buffering what is explicitly written to it.
-
-**Output Streaming**: The `output` and `debug` streams begin emitting data
-only after the process starts and the child process produces output. No
-buffering is needed since data flows directly from child process to exposed
-streams.
-
-```javascript
-const process = sh({ immediate: false })`long-running-command`;
-
-// Set up custom stream handling
-process.output.on("data", chunk => {
-  // Custom processing
-  customLogger.info(chunk.toString());
-});
-
-process.debug.pipe(errorLogStream);
-process.start(); // Start execution
-```
-
-### Manual Execution
-
-#### `process.start()`
-**Type**: `Process` (returns self for chaining)  
-**Purpose**: Manually start execution of a deferred process.  
-**Idempotent**: Safe to call multiple times - subsequent calls are no-ops.
-
-```javascript
-const process = sh({ immediate: false })`command`;
-// ... set up streams, logging, etc ...
-process.start();  // Start the process
-process.start();  // Safe - no-op since already started
-await process;   // Wait for completion
-```
-
-## Usage Patterns
-
-### 1. Backward Compatibility (No Changes)
-
-```javascript
-// All existing patterns work unchanged - Process resolves to ProcessResult
-const result1 = await sh`echo "test"`;
-const result2 = await sh.safe`might-fail`;
-
-// ProcessResult (with .error)
-const result3 = await sh.interactive`interactive-cmd`;
-const result4 = sh.sync`sync-command`;
-
-// Chainable methods still work
-const result5 = await sh.safe.interactive`cmd`;
-const result6 = await cmd.input("data")`cat`;
-const result7 = await sh({throw: false})`might-fail`;
-
-// Error handling unchanged
-try {
-  await sh`exit 1`;
-} catch (error) {
-  console.log(error instanceof ProcessError); // true
-}
-```
-
-### 2. Deferred Execution with Custom Streams
-
-```javascript
-// Create process but don't start
-const process = sh({ immediate: false })`complex-command`;
-
-// Set up custom stream handling
-process.output.on("data", chunk => {
-  metrics.recordOutput(chunk.length);
-  customProcessor.process(chunk);
-});
-
-process.debug.pipe(errorAggregator);
-
-// Start execution when ready
-process.start();
-const result = await process;
-```
-
-### 3. Process Monitoring and Introspection
-
-```javascript
-const process = sh`echo "hello ${userName}"`;
-
-// Log command for audit trail
-logger.info(`Executing: ${process.command}`);
-logger.debug(`Config: ${JSON.stringify(process.config)}`);
-
-// Monitor streams for debugging
-process.debug.on("data", chunk => {
-  debugger.captureStderr(process.command, chunk.toString());
-});
-
-const result = await process;
-```
-
-### 4. Advanced Stream Manipulation
-
-```javascript
-const process = sh({ 
-  immediate: false, 
-  output: false, // Don't auto-pipe to process.stdout
-  debug: false, // Don't auto-pipe to process.stderr
-})`data-processing-command`;
-
-// Custom stream processing pipeline
-process.output
-  .pipe(dataTransform)
-  .pipe(dataValidator)
-  .pipe(dataOutput);
-
-// Or use process chaining
-const result = await sh`generate-data`.pipe`transform`.pipe`validate`;
-
-process.debug.pipe(customErrorHandler);
-process.start();
-await process;
-```
-
-## Implementation Considerations
-
-### 1. Backward Compatibility
-
-**Critical Requirement**: All existing APIs must work unchanged. The
-Process class implements the full thenable interface (`then()`, `catch()`,
-`finally()` methods) to ensure seamless integration with existing
-Promise-based code.
-
-**API Compatibility**: 
-- `await sh`command`` → resolves to ProcessResult
-- `sh.sync`command`` → returns ProcessResult directly (no Process instance)
-- `sh.safe`command`` → Process that resolves to ProcessResult with error
-  field instead of rejecting
-- `sh({options})`command`` → Process with merged configuration
-- All chainable methods return Process instances that resolve to ProcessResult
-
-**Test Coverage**: All existing tests must pass without modification.
-
-### 2. Stream Lifecycle Management
-
-**Immediate Mode**: Streams are initialized immediately in constructor via
-`#start()`
-**Deferred Mode**: Streams are initialized when `start()` is called or
-`then()` is awaited
-
-**Auto-start Behavior**: If a deferred process is awaited without calling
-`start()`, it automatically starts to prevent hanging.
-
-### 3. Error Handling
-
-**Process Not Started**: `start()` is safe to call multiple times (idempotent)
-**Sync vs Async**: `.sync` variants bypass Process entirely and return
-ProcessResult directly
-**Stream Access**: Stream getters return `null` if child process not available
-**Promise Compatibility**: `then()` method maintains identical error
-handling to existing implementation
-**Safe Mode Support**: Respects `throw: false` config to return
-ProcessResult with error instead of rejecting
-
-### 4. Memory and Resource Management
-
-**Stream References**: Getters provide direct access to underlying streams
-without additional wrappers
-**Configuration Copies**: `config` getter returns defensive copies to
-prevent mutation
-**Process Lifecycle**: Existing process cleanup and resource management
-preserved
-
-## Integration Points
-
-### Template Literal Functions
-
-```javascript
-// sh function integration - returns Process that resolves to ProcessResult
-export function sh(strings, ...values) {
-  if (typeof strings === "object" && !Array.isArray(strings)) {
-    // Called as sh({options}) - return configured function
-    const options = strings;
-    return (strings, ...values) => {
-      const command = buildShellExpression(strings, values);
-      return new Process(command, options);
-    };
-  }
-  
-  // Called as sh`command` - return Process instance
-  const command = buildShellExpression(strings, values);
-  const options = /* extract from chainable API */;
-  
-  return new Process(command, options);
-}
-
-// Sync variants return ProcessResult directly, not Process
-export function shSync(strings, ...values) {
-  const command = buildShellExpression(strings, values);
-  const options = /* extract from chainable API with sync: true */;
-  
-  // Execute synchronously and return ProcessResult directly
-  return executeSyncCommand(command, options);
-}
-```
-
-### Chainable API Preservation
-
-```javascript
-// All chainable methods (.safe, .interactive, .input) work with new
-// Process class
-const process = sh.safe.interactive({ immediate: false })`command`;
-console.log(process.config);  // Shows all merged configuration options
-
-// Sync methods bypass Process and return ProcessResult directly
-const result = sh.sync`echo "hello"`;  // ProcessResult, not Process
-console.log(result.output);  // "hello\n"
-```
-
-## Testing Strategy
-
-### 1. Existing Test Compatibility
-- All existing tests must pass unchanged
-- No modifications to existing test files
-
-### 2. New Feature Tests
-
-#### Deferred Execution Tests
-```javascript
-test("immediate: false prevents automatic execution", async () => {
-  const process = sh({ immediate: false })`echo "test"`;
-  // Process should not have started yet
-  assert.equal(process.config.immediate, false);
-  
-  process.start();
-  const result = await process;
-  assert.equal(result.output.trim(), "test");
-});
-```
-
-#### Stream Access Tests
-```javascript
-test("output getter provides access to child process stdout", async () => {
-  const process = sh({ immediate: false })`echo "test"`;
-  
-  let capturedData = "";
-  process.output.on("data", chunk => {
-    capturedData += chunk.toString();
-  });
-  
-  process.start();
-  await process;
-  assert.equal(capturedData.trim(), "test");
-});
-```
-
-#### Introspection Tests
-```javascript
-test("command getter returns resolved command string", () => {
-  const name = "world";
-  const process = sh`echo "hello ${name}"`;
-  assert.equal(process.command, "echo \"hello world\"");
-});
-```
-
-### 3. Error Condition Tests
-
-```javascript
-test("start() is idempotent and safe to call multiple times", () => {
-  const process = sh({ immediate: false })`echo "test"`;
-  process.start();
-  
-  // Should not throw - idempotent behavior
-  assert.doesNotThrow(() => {
-    process.start();
-  });
-  
-  assert.equal(process.started, true);
-});
-```
-
-## Migration Path
-
-### Phase 1: Process Class Implementation
-1. Create new Process class with enhanced capabilities
-2. Integrate with existing template literal functions
-3. Ensure backward compatibility
-
-### Phase 2: Configuration Integration
-1. Add `immediate` option to configuration parsing
-2. Update chainable API to pass configuration to Process constructor
-3. Test deferred execution patterns
-
-### Phase 3: Stream Integration
-1. Implement stream getter methods
-2. Test stream access in both immediate and deferred modes
-3. Validate stream lifecycle management
-
-### Phase 4: Testing and Validation
-1. Run full existing test suite
-2. Add comprehensive tests for new features
-3. Performance and memory usage validation
-
-## Benefits
-
-### For Library Maintainers
-- **Reduced Complexity**: Centralized process management in single class
-- **Better Testability**: Clear separation of concerns and cleaner interfaces
-- **Enhanced Debugging**: Command and config introspection for troubleshooting
-
-### For Library Users
-- **Advanced Control**: Fine-grained process execution control
-- **Stream Flexibility**: Direct access to streams for custom processing
-- **Better Monitoring**: Introspection capabilities for debugging and logging
-- **Zero Migration**: All existing code continues to work unchanged
-
-### For Advanced Use Cases
-- **Custom Stream Processing**: Direct stream manipulation for specialized
-  workflows
-- **Process Orchestration**: Better control over when processes start
-- **Monitoring and Observability**: Built-in introspection for debugging
-  and metrics
-
-## Success Criteria
-
-1. **Full Backward Compatibility**: All existing APIs work unchanged
-2. **New Feature Functionality**: All new features work as designed
-3. **Performance Parity**: No performance regression in existing usage patterns
-4. **Enhanced Capabilities**: Advanced users can leverage new process
-   control features
-5. **Test Coverage**: Comprehensive test suite covers both existing and new
-   functionality
+Every chainable — `.safe`, `.interactive`, `.input(data)`, and their
+combinations — merges configuration into the constructor rather than taking a
+separate code path. `sh({ ... })` already returns a configured tag today, so
+that plumbing partly exists.
+
+`.sync` keeps `spawnSync` and returns a `ProcessResult` directly. A
+synchronous call cannot return a thenable and pretend to be one, so it does
+not construct a `Process` at all.
+
+`executeAsyncCommand()` is deleted. Its stream handling becomes this class's
+internals; there is no second engine left behind.
+
+## Behaviors
+
+One behavior per test, derived from the decisions above. This list is the
+contract the implementation is written against; progress is tracked on the
+issue rather than in a checklist file.
+
+**Streams and lifecycle**
+
+1. `output`, `debug`, and `input` are non-null before `start()`.
+2. Each is identity-stable across `start()`.
+3. A handler attached before `start()` receives data after it.
+4. Input written before `start()` reaches the child.
+5. Multiple pre-start writes preserve order.
+6. Piping a source into `input` does not eagerly drain it.
+7. `output` and `debug` emit nothing before `start()`.
+8. `start()` on an already-started process is a no-op, not a throw.
+9. `start()` returns `this`.
+10. `started` reflects whether a child exists.
+11. `config` is frozen, including nested objects.
+12. `command` returns the resolved command string.
+13. `shell` reports the selected shell.
+
+**Result semantics**
+
+14. `then` exists and auto-starts a deferred process.
+15. Exit `0` resolves a `ProcessResult` with complete `output`.
+16. Nonzero exit rejects a `ProcessError` with code, `output`, and `debug`.
+17. `throw: false` resolves a `ProcessResult` with `.error` set.
+18. `catch` behaves as the Promise analogue.
+19. `finally` behaves as the Promise analogue.
+20. A missing command surfaces a `ProcessError` with code `127`.
+21. `cwd` is honored.
+22. `env` is merged over `process.env`.
+
+**Capture and forwarding**
+
+23. stdout is captured on the result.
+24. stderr is captured on the result.
+25. `output: false` suppresses stdout forwarding while capture continues.
+26. `debug: false` suppresses stderr forwarding while capture continues.
+
+**Iteration**
+
+27. Iterating a process yields stdout chunks.
+28. Iterating a failing command throws the `ProcessError` at stream end.
+29. Awaiting after iterating still resolves a complete `ProcessResult`.
+30. Abandoning iteration early does not leave the child unreaped.
+
+**Pipelines**
+
+31. `pipe` with a template tag returns a pipeline whose tail is a `Process`.
+32. `pipe` with an argv array returns a pipeline, running without a shell.
+33. `pipe` auto-starts the source.
+34. Interpolation in a `pipe` tag is escaped.
+35. A two-command chain moves data end to end.
+36. A three-command chain composes.
+37. `pipe` accepts a transform stream as a stage.
+38. `proc.pipe(gzip).pipe(file)` wires stdout → gzip → file, verified by
+    reading the bytes back, rather than forking stdout two ways.
+39. A chain mixing stream and command stages composes.
+40. Awaiting a chain ending in a file sink settles only after the bytes land.
+41. Iterating a chain yields the tail's output.
+42. A chain rejects with the first failing stage's error.
+43. The rejection identifies which stage failed.
+44. `.safe` on a chain resolves `ok: false` naming the failing stage.
+45. Per-stage config lets one stage swallow while others do not.
+46. A mid-chain stream error propagates rather than hanging the chain.
+
+**Shell selection and integration**
+
+47. `sh\`cat missing.txt | wc -l\`` rejects, because pipeline failure
+    reporting is on in the selected shell.
+48. The same command yields the same result and error shape across supported
+    shells.
+49. `sh\`cmd\`` returns a `Process`.
+50. `cmd\`cmd\`` returns a `Process`.
+51. `sh({ immediate: false })` defers.
+52. `.safe`, `.interactive`, and `.input(data)` merge config into the
+    constructor, including in combination.
+53. `.sync` returns a `ProcessResult` directly and constructs no `Process`.
+54. Every pre-existing test passes unmodified.
