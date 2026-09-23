@@ -208,6 +208,62 @@ accumulates, the failure happens on crossing the limit rather than when
 name the command, say how far it got, and give the three remedies, which are
 a writable, iteration, or `output: false`.
 
+### Dependencies: none, unless you want a terminal
+
+The package installs nothing. The single exception is the optional
+pseudo-terminal of issue #36, which is native, compiles on install, and is
+only needed by a caller who wants a child to believe it is on a terminal
+while still reading its bytes.
+
+That constrains one decision made above. `result.output` is defined as plain
+text, so escape sequences have to be removed, and removing them correctly
+means handling far more than colour — cursor movement, alternate screen
+buffers, and OSC-8 hyperlinks are all escape sequences, and the obvious
+`\x1b\[[0-9;]*m` misses most of them. The answer is to vendor the pattern
+from `ansi-regex`, which is MIT, six lines, treats OSC and CSI separately,
+and deliberately stops an unterminated `ESC ]` from rescanning the remaining
+input. Copying a known-good pattern with attribution is not the same as
+hand-rolling one, and it keeps the install empty. The cost is that a later
+fix upstream has to be noticed and copied across.
+
+This matters little in 1.0 and a great deal after #36. Without a terminal a
+child suppresses colour itself, so almost nothing emits escape sequences
+through a pipe and stripping is close to a no-op. With a pseudo-terminal the
+child believes it is on a terminal and emits them unprompted, at which point
+every captured stream contains them.
+
+### Bounded retention ships as `head` and `tail`
+
+Retention is all or nothing, and anything else is a writable the caller
+supplies. That promise is only honest if writing one is genuinely easy, and
+it is not: trimming a byte buffer to a limit slices multi-byte characters in
+half, so a hand-rolled version works on ASCII and silently corrupts the first
+accented character or emoji in a build log. This project wrote and debugged
+exactly that code once already, while bounded capture was still an option.
+
+So `head(size)` and `tail(size)` are exported — writables that keep the first
+or last bytes and expose the result as `text`. Both, not one: they are the
+same implementation with a comparison reversed, `tail` serves a build that
+died at the end while `head` serves a compiler whose first error caused every
+later one, and shipping only one would be an arbitrary asymmetry.
+
+They are deliberately the only two. Filtering, counting, and matching are
+application-specific and belong in the caller's own writable, which is what
+the port model already accepts.
+
+### Smaller decisions
+
+`sh.live` stays awaitable. The shorthand says where bytes go, not how long a
+command runs, and watching a build, a push, or a test run and then waiting
+for it is ordinary. Refusing to await would break those to catch a hang that
+any mode produces — `await sh\`npm run dev\`` hangs identically — so the
+problem is the command not ending, not the shorthand.
+
+`sh.input(data)` stays. It sets the same key the configuration object does,
+carries the richer values without special handling, and composes with the
+other chainables. The only argument against it is that no other option has a
+chainable, which is not worth breaking existing calls over.
+
 ### Pipelines behave as one command
 
 `input` configures the first stage, `output` the last, and `debug` merges
