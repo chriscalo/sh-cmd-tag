@@ -80,6 +80,45 @@ Input written before start sits in the `PassThrough` buffer and flushes when
 the pipe to `child.stdin` opens. Output and debug stay silent until a child
 exists, because nothing writes into them until then.
 
+### Why this library exists, given execa
+
+Answered by running execa 10 rather than reading about it, because an earlier
+answer to the same question was given from its documentation and was wrong.
+
+execa's template tag escapes safely — strings, numbers, arrays, and even
+another command's result all interpolate without injection. It manages that
+by refusing to use a shell: arguments go to the child as an argv array, so
+there is no shell to be injected into. Turn one on and the guarantee is
+gone:
+
+    await execa({shell: true})`echo ${"x; echo PWNED"}`   // -> "x\nPWNED"
+    await execa({shell: true})`echo ${"$(echo OWNED)"}`   // -> "OWNED"
+
+Both ran. So the moment a caller wants a pipe, a glob, or a redirection —
+the reason `sh` exists at all — execa offers no protection, and this
+library's escaping layer is the thing that does. That is a security
+property, not sugar, and it is the half of this code that would be kept
+under any plan.
+
+On features the two are at parity, with complementary gaps. Each covers ten
+of the fourteen use cases below. This library bounds a capture from the end
+and cannot yet bound from the front; execa bounds from the front and cannot
+bound from the end, and does it by killing the subprocess, so "too noisy" is
+reported as "failed". Neither records stdin. Neither concatenates input
+sources in order — execa's array looks like concatenation but merges
+concurrently, which a slow source followed by a fast one demonstrates. execa
+passes real file descriptors and so gives a child a true terminal, which
+this library does not do and must.
+
+Wrapping execa was considered and rejected. It would trade one set of gaps
+for another, add twelve transitive dependencies to a package whose purpose
+is not running what the caller did not intend, and require an adapter plus
+re-basing pipelines. The decisive objection is that it would not remove the
+design work: a wrapper still needs its own configuration surface, unless it
+forwards execa's options untouched, in which case the API is not this
+library's at all. The escape hatch stays open — the escaping layer is what
+a thin wrapper would keep, so bailing later stays cheap.
+
 ### OPEN QUESTION: who closes stdin, and when
 
 This is unresolved. It is written down rather than decided because the
