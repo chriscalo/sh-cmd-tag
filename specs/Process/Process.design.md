@@ -121,78 +121,111 @@ a thin wrapper would keep, so bailing later stays cheap.
 
 ### The stdio model
 
-Each of `input`, `output`, and `debug` names a port, and a port's value says
+Each of `input`, `output`, and `debug` names a port, and the port's value says
 what it is connected to. One connection is written on its own; several are
 written as a list.
 
 | value | means |
 | --- | --- |
-| `true` | the parent's own channel — plus the default buffer, see below |
 | `false` | nothing |
+| `true` | put it in the result |
 | a stream | that stream: readable on `input`, writable on `output` |
-| `{ file: "path" }` | that file |
-| a `Capture` | keep a copy there |
 | a string, on `input` only | that literal text |
-| `{ stream: true }`, on `input` only | hand the caller a writable |
 
-A list means different things by direction, because only one reading of each
-is meaningful: on `input` the sources are read **in order**, and on `output`
-and `debug` every destination receives **every byte**. Concatenating writers
-and fanning out ordered readers are both nonsense, so the bracket cannot be
-ambiguous.
+`true` means the same thing on every port, so `result.input` holds what was
+sent just as `result.output` holds what came back. A list is **ordered** on
+`input` and **fans out** on `output` and `debug` — the only reading of each
+that is not nonsense, since concatenating writers and fanning out ordered
+readers are both meaningless.
 
-`true` shows the output *and* keeps what fits. That is what a reader assumes
-it means, and it is only safe to mean because the default buffer is bounded
-— see below. It also removes the distinction between watching a test run and
-watching a dev server, which never deserved to be a distinction.
+Defaults are `{ input: false, output: true, debug: true }`. A command is kept
+but not shown, and gets no input — which is what stops a command that reads
+stdin from waiting forever for bytes that cannot arrive.
 
-When the parent is a port's **only** connection, the child is given the real
-file descriptor, so it sees a true terminal and `vim`, `ssh`, and password
-prompts work. Combined with anything else the bytes must come through this
-process to be copied, so the child gets a pipe and loses its TTY. That trade
-is unavoidable — a real terminal and a captured copy cannot both be had —
-and stating it in the configuration is better than hiding it in the
-implementation.
+Anything unusual is a stream the caller supplies, because that is what streams
+are for. Keeping only the last part of a log, filtering to matching lines,
+counting without storing — each is a writable of a few lines, and none of them
+needs a configuration vocabulary.
 
-### Buffers are objects, and the default one is bounded
+### Real terminals, and why colour needs no option
 
-A `Capture` is a destination like any other, with named behaviours after the
-fashion of `core.async` and repeater.js, whose `SlidingBuffer` keeps the
-newest and `DroppingBuffer` keeps the oldest:
+A child either receives the real file descriptors or receives pipes, and the
+two are mutually exclusive. With `stdio: ["ignore", "inherit", "pipe"]` Node
+reports `child.stdout === null`: there is no pipe, so there is nothing to
+read. Handing over the terminal means the bytes never pass through this
+process at all.
 
-    Capture.all()              // unbounded
-    Capture.keepLast(size)     // drop the oldest — a build dies at the end
-    Capture.keepFirst(size)    // drop the newest — the first error is real
-    Capture.failIfOver(size)   // refuse to discard; throw instead
+So `interactive` hands over the real descriptors and its output is
+deliberately unobservable, and every other mode pipes, so iteration,
+pipelines, and `result.output` always work. The choice is explicit rather
+than inferred from the destination list; an earlier draft picked real
+descriptors whenever the terminal was a port's only connection, which meant
+adding one destination silently changed whether the child saw a terminal and
+silently broke iteration.
 
-Making them objects rather than option keys settles three arguments at once.
-Keeping both ends stops being an illegal state and becomes two buffers in a
-list. One buffer handed to two ports merges them in the order things
-happened, which is `2>&1` with nothing new invented. And a buffer is read by
-the name the caller gave it, rather than by guessing which meaning of
-`result.output` applies.
+Colour then needs no option at all. A child decides whether to emit colour by
+asking `isatty`, so it emits colour under `interactive`, where it has a real
+terminal, and does not elsewhere, where it does not. The previous `color`
+option existed to fake that answer with `FORCE_COLOR`, which worked for
+colour and could never work for cursor movement, alternate screen buffers, or
+raw-mode keystrokes. Faking one capability and not the others is worse than
+not faking any, so the option is removed. Having both — a child that believes
+it is on a terminal and bytes this library can still read — requires a
+pseudo-terminal, which is issue #36.
 
-**The default buffer holds 10MB and keeps the end**, setting `truncated` on
-the result once anything is dropped. The number is measured rather than
-chosen: the largest output worth parsing in a survey of ordinary commands
-was a 220-test run at 13.8kB, and a full recursive listing of `/usr/share`
-was 1.3MB. Ten megabytes is several hundred times the first and seven times
-the second, while a command producing 16MB in a second and a half — measured
-— settles at ten and stays flat rather than reaching tens of gigabytes in an
-hour. The two precedents bracket it and are both wrong for this: Node's
-`spawnSync` defaults to 1MB, which this project hit and had to raise, and
-execa's 100MB is a reasonable failure ceiling but far too much to leave
-sitting idle for output nobody reads.
+### The exposed streams are handles, not destinations
 
-Bounding by default is what makes `true` safe to mean "show it and keep it",
-which in turn is what removed the string token this design carried for a
-while. Nothing has to be said to get the ordinary thing.
+`p.output` exists whether or not anything was configured, so `for await` and
+`pipe()` work with no configuration. That does not contradict "absence means
+absence", because the rule governs what this library connects on the caller's
+behalf, not what the caller can reach for.
 
-### OPEN QUESTION: who closes stdin, and when
+The asymmetry with `input` is deliberate and is the whole of the original bug.
+An unread source can be drained internally, harmlessly. An unwritten sink can
+never be closed, because "will write later" and "will never write" are the
+same observation. So output can be offered unconditionally and input cannot.
 
-This is unresolved. It is written down rather than decided because the
-decision changes the class surface, and the surface is cheap to change only
-until the package is published.
+### Retention is unbounded, and the ceiling is an error
+
+There is no retention setting. `true` keeps everything; anything else is a
+stream. The production failure that prompted this was unbounded accumulation
+by a process that never exits, and the answer is that such a process names its
+destinations — `{ output: process.stdout }` — and so retains nothing, rather
+than a bound nobody would have configured either.
+
+`result.output` is `undefined` when no retention was configured, not `""`.
+That distinguishes "never asked for it" from "asked, and it printed nothing",
+and it fails on the line holding the misunderstanding instead of producing an
+empty value that flows onward and fails somewhere unrelated.
+
+`truncated` is removed. The library never discards bytes by choice, so a
+returned string is all of it. The one hard limit is that a JavaScript string
+holds at most 536,870,888 characters, and crossing it is reported rather than
+clipped: silently returning a result that looks complete is the failure mode
+this whole design has been removing. Because the byte count is known as it
+accumulates, the failure happens on crossing the limit rather than when
+`toString()` raises `RangeError: Invalid string length` — so the message can
+name the command, say how far it got, and give the three remedies, which are
+a writable, iteration, or `output: false`.
+
+### Pipelines behave as one command
+
+`input` configures the first stage, `output` the last, and `debug` merges
+every stage — which is what a shell does with `a | b | c`. Intermediate
+wiring is internal: there is no meaning for "stage two's output" other than
+"stage three's input", so exposing it would only allow contradictions.
+Intermediate stages retain nothing, since their output is consumed
+downstream. A downstream stage has no configured input, but the connection
+was made by the pipeline rather than absent, so the EOF rule does not apply
+to it. Per-stage options still work for anything that is not a port.
+
+### Who closes stdin, and when — resolved
+
+Resolved: a port with nothing connected to it is closed, so a command that
+reads stdin receives EOF rather than waiting for bytes that cannot arrive.
+The survey and measurements below are kept because they are the evidence for
+that decision, and because the same reasoning governs why `output` can be
+offered unconditionally while `input` cannot.
 
 **What happens now.** `input` is a `PassThrough` piped to `child.stdin`. If
 nothing ends it, the child's stdin never reaches EOF. A command that reads
