@@ -119,6 +119,75 @@ forwards execa's options untouched, in which case the API is not this
 library's at all. The escape hatch stays open — the escaping layer is what
 a thin wrapper would keep, so bailing later stays cheap.
 
+### The stdio model
+
+Each of `input`, `output`, and `debug` names a port, and a port's value says
+what it is connected to. One connection is written on its own; several are
+written as a list.
+
+| value | means |
+| --- | --- |
+| `true` | the parent's own channel — plus the default buffer, see below |
+| `false` | nothing |
+| a stream | that stream: readable on `input`, writable on `output` |
+| `{ file: "path" }` | that file |
+| a `Capture` | keep a copy there |
+| a string, on `input` only | that literal text |
+| `{ stream: true }`, on `input` only | hand the caller a writable |
+
+A list means different things by direction, because only one reading of each
+is meaningful: on `input` the sources are read **in order**, and on `output`
+and `debug` every destination receives **every byte**. Concatenating writers
+and fanning out ordered readers are both nonsense, so the bracket cannot be
+ambiguous.
+
+`true` shows the output *and* keeps what fits. That is what a reader assumes
+it means, and it is only safe to mean because the default buffer is bounded
+— see below. It also removes the distinction between watching a test run and
+watching a dev server, which never deserved to be a distinction.
+
+When the parent is a port's **only** connection, the child is given the real
+file descriptor, so it sees a true terminal and `vim`, `ssh`, and password
+prompts work. Combined with anything else the bytes must come through this
+process to be copied, so the child gets a pipe and loses its TTY. That trade
+is unavoidable — a real terminal and a captured copy cannot both be had —
+and stating it in the configuration is better than hiding it in the
+implementation.
+
+### Buffers are objects, and the default one is bounded
+
+A `Capture` is a destination like any other, with named behaviours after the
+fashion of `core.async` and repeater.js, whose `SlidingBuffer` keeps the
+newest and `DroppingBuffer` keeps the oldest:
+
+    Capture.all()              // unbounded
+    Capture.keepLast(size)     // drop the oldest — a build dies at the end
+    Capture.keepFirst(size)    // drop the newest — the first error is real
+    Capture.failIfOver(size)   // refuse to discard; throw instead
+
+Making them objects rather than option keys settles three arguments at once.
+Keeping both ends stops being an illegal state and becomes two buffers in a
+list. One buffer handed to two ports merges them in the order things
+happened, which is `2>&1` with nothing new invented. And a buffer is read by
+the name the caller gave it, rather than by guessing which meaning of
+`result.output` applies.
+
+**The default buffer holds 10MB and keeps the end**, setting `truncated` on
+the result once anything is dropped. The number is measured rather than
+chosen: the largest output worth parsing in a survey of ordinary commands
+was a 220-test run at 13.8kB, and a full recursive listing of `/usr/share`
+was 1.3MB. Ten megabytes is several hundred times the first and seven times
+the second, while a command producing 16MB in a second and a half — measured
+— settles at ten and stays flat rather than reaching tens of gigabytes in an
+hour. The two precedents bracket it and are both wrong for this: Node's
+`spawnSync` defaults to 1MB, which this project hit and had to raise, and
+execa's 100MB is a reasonable failure ceiling but far too much to leave
+sitting idle for output nobody reads.
+
+Bounding by default is what makes `true` safe to mean "show it and keep it",
+which in turn is what removed the string token this design carried for a
+while. Nothing has to be said to get the ordinary thing.
+
 ### OPEN QUESTION: who closes stdin, and when
 
 This is unresolved. It is written down rather than decided because the
