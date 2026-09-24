@@ -39,7 +39,7 @@ execution with a security-first design. All JavaScript uses ES module syntax
 
 - Template literal syntax for intuitive command construction
 - Safe interpolation with automatic shell escaping
-- Object/array interpolation (objects become `--flag value` pairs, arrays
+- Object/array interpolation (objects become `--flag=value` pairs, arrays
   become space-separated)
 - Streaming output with latency tracking
 - Security-first approach preventing shell injection
