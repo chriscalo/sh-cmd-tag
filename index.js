@@ -495,7 +495,7 @@ function templateEscape(str, context = { type: "unquoted" }) {
 function buildCommandArgs(strings, values) {
   const parts = strings.raw ?? strings;
   // Per call, so a value cannot contain something that looks like one.
-  const mark = ` ${Math.random().toString(36).slice(2)} `;
+  const mark = `\0${Math.random().toString(36).slice(2)}\0`;
   const slots = [];
   const hold = (value) => `${mark}${slots.push(String(value)) - 1}${mark}`;
 

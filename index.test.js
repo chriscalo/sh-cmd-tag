@@ -3226,6 +3226,21 @@ test("a value cannot smuggle in an argument boundary", async () => {
   assert.deepEqual(actual, expected);
 });
 
+test("the published source is text, so every tool can read it", async () => {
+  // A placeholder delimiter has to be a byte no argument can contain, which
+  // makes NUL the right choice — but writing it as a literal byte rather
+  // than `\0` turns the only file this package ships into binary. `grep`
+  // then matches nothing, `git diff` prints "Binary files differ", and
+  // GitHub refuses to render the review. The escape means the same thing to
+  // JavaScript and keeps the file readable, so this guards the encoding
+  // rather than the behaviour.
+  const { readFileSync } = await import("node:fs");
+  const source = readFileSync(join(__dirname, "index.js"));
+  const actual = { nulBytes: source.filter((byte) => byte === 0).length };
+  const expected = { nulBytes: 0 };
+  assert.deepEqual(actual, expected);
+});
+
 // --- env is the environment, not an addition to it ------------------------
 
 test("env replaces the environment rather than extending it", async () => {
