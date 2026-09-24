@@ -3,9 +3,12 @@ import { strict as assert } from "node:assert";
 import { spawn, execSync } from "node:child_process";
 import { createReadStream, writeFileSync, unlinkSync } from "node:fs";
 import { join, dirname } from "node:path";
+import { finished } from "node:stream/promises";
 import {
   sh,
   cmd,
+  head,
+  tail,
   ProcessError,
   ProcessResult,
   markSafeString,
@@ -3238,6 +3241,118 @@ test("the published source is text, so every tool can read it", async () => {
   const source = readFileSync(join(__dirname, "index.js"));
   const actual = { nulBytes: source.filter((byte) => byte === 0).length };
   const expected = { nulBytes: 0 };
+  assert.deepEqual(actual, expected);
+});
+
+// --- head and tail: the two bounded writables worth shipping --------------
+
+/**
+ * Writes each text to a bounded writable, closes it, and returns what it
+ * kept — so the assertion sees the settled value rather than whatever had
+ * arrived by the time the line ran.
+ */
+async function writtenTo(sink, ...texts) {
+  for (const text of texts) {
+    sink.write(text);
+  }
+  sink.end();
+  await finished(sink);
+  return sink.text;
+}
+
+test("head and tail keep an end of the bytes, never half a character", async () => {
+  // This is the bug a hand-rolled version has, and the reason these are
+  // exported at all. "é" is two bytes and "🙂" is four, so every limit
+  // below falls inside a character. A naive buffer returns the halves and
+  // the text grows a replacement character; these return one character
+  // fewer.
+  const actual = {
+    headUnderLimit: await writtenTo(head(64), "hello"),
+    tailUnderLimit: await writtenTo(tail(64), "hello"),
+    headAscii: await writtenTo(head(3), "abcdef"),
+    tailAscii: await writtenTo(tail(3), "abcdef"),
+    headCutsTwoByte: await writtenTo(head(5), "ééé"),
+    tailCutsTwoByte: await writtenTo(tail(5), "ééé"),
+    headCutsFourByte: await writtenTo(head(4), "a🙂"),
+    tailCutsFourByte: await writtenTo(tail(3), "a🙂"),
+    headKeepsWholeFourByte: await writtenTo(head(5), "a🙂"),
+    tailKeepsWholeFourByte: await writtenTo(tail(4), "a🙂"),
+    acrossWrites: await writtenTo(tail(4), "abc", "def"),
+    nothingWritten: await writtenTo(tail(4)),
+  };
+  const expected = {
+    headUnderLimit: "hello",
+    tailUnderLimit: "hello",
+    headAscii: "abc",
+    tailAscii: "def",
+    headCutsTwoByte: "éé",
+    tailCutsTwoByte: "éé",
+    headCutsFourByte: "a",
+    tailCutsFourByte: "",
+    headKeepsWholeFourByte: "a🙂",
+    tailKeepsWholeFourByte: "🙂",
+    acrossWrites: "cdef",
+    nothingWritten: "",
+  };
+  assert.deepEqual(actual, expected);
+});
+
+test("a bounded writable is just a destination a port accepts", async () => {
+  // The promise made when a size option was removed: anything unusual is a
+  // stream you supply. These are the two that are not unusual.
+  const lastLines = tail(11);
+  const firstLines = head(7);
+  const result = await sh({
+    output: [lastLines, firstLines],
+  })`printf 'one\ntwo\nthree\n'`;
+
+  const actual = {
+    tail: lastLines.text,
+    head: firstLines.text,
+    kept: result.output,
+  };
+  const expected = {
+    tail: "\ntwo\nthree\n",
+    head: "one\ntwo",
+    kept: undefined,
+  };
+  assert.deepEqual(actual, expected);
+});
+
+test("a size carries its unit, and everything is not a size", async () => {
+  const filler = "x".repeat(3000);
+  const rejection = (fn) => {
+    const error = errorFrom(fn);
+    return error === null ? "accepted" : error.constructor.name;
+  };
+
+  const actual = {
+    bytes: (await writtenTo(tail(12), filler)).length,
+    decimal: (await writtenTo(tail("1kB"), filler)).length,
+    binary: (await writtenTo(tail("1KiB"), filler)).length,
+    fractional: (await writtenTo(tail("1.5kB"), filler)).length,
+    unitless: rejection(() => tail("1024")),
+    unknownUnit: rejection(() => tail("1 kilobyte")),
+    everything: rejection(() => head(Infinity)),
+    zero: rejection(() => head(0)),
+    fractionalBytes: rejection(() => head(1.5)),
+    // Keeping everything is a port's own job, so the error says so rather
+    // than leaving a caller to guess which key they wanted.
+    everythingNamesThePort: errorFrom(() => head(Infinity)).message
+      .includes("`true` on the port"),
+  };
+  const expected = {
+    bytes: 12,
+    decimal: 1000,
+    binary: 1024,
+    fractional: 1500,
+    unitless: "TypeError",
+    unknownUnit: "TypeError",
+    everything: "TypeError",
+    zero: "TypeError",
+    fractionalBytes: "TypeError",
+    everythingNamesThePort: true,
+  };
   assert.deepEqual(actual, expected);
 });
 

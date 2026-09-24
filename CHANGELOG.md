@@ -54,6 +54,16 @@ distinguishable from "asked, and it printed nothing". Nothing is discarded, so
 a string you get back is all of it; a command producing more than a JavaScript
 string can hold fails with an error naming the command and the remedies.
 
+**Bounded logs.** `head(size)` and `tail(size)` are exported writables that
+keep the first or last bytes written to them and expose the result as
+`text` — one for a compiler whose first error caused every later one, the
+other for a build that died at the end. They ship because trimming bytes to
+a limit cuts multi-byte characters in half, so a hand-rolled version works
+on ASCII and then corrupts the first accented word in a build log. A size is
+a number of bytes, or a string whose unit is visible: `"64kB"` counts in
+thousands, `"64KiB"` in units of 1024, and a string without a unit is an
+error.
+
 **Terminals.** `interactive` hands the child the real file descriptors, so it
 sees a terminal and `vim`, `ssh`, and password prompts work — and its output
 is unobservable in exchange, because the bytes never pass through this

@@ -277,20 +277,22 @@ const branch = await sh`git branch --show-current`.catch(() => "unknown");
 
 Any of these can be passed to `sh({ ... })` or `cmd({ ... })`:
 
-| Option        | Default | Meaning                                      |
-| ------------- | ------- | -------------------------------------------- |
-| `immediate`   | `true`  | Start on construction rather than on `start()` |
+| Option        | Default | Meaning                                          |
+| ------------- | ------- | ------------------------------------------------ |
+| `output`      | `true`  | Where stdout goes — see [Where the bytes go](#where-the-bytes-go) |
+| `debug`       | `true`  | Where stderr goes                                |
+| `input`       | `false` | Where stdin comes from                           |
+| `immediate`   | `true`  | Start on construction rather than on `start()`   |
 | `shell`       | `true`  | `true` picks a shell for you; a string names one |
-| `output`      | `false` | Stream stdout to your terminal as it arrives |
-| `debug`       | `false` | Stream stderr to your terminal as it arrives |
-| `input`       | —       | `true` inherits your stdin; a string or stream is written |
-| `throw`       | `true`  | Reject on failure, or resolve with `.error`  |
-| `color`       | —       | Force colour on or off in the child          |
-| `timeout`     | —       | Stop the process after this long             |
-| `gracePeriod` | `5000`  | Wait before escalating a stop to a kill      |
-| `signal`      | —       | An `AbortSignal`; aborting kills the process |
-| `env`         | —       | Variables, merged over `process.env`         |
-| `cwd`         | —       | Working directory                            |
+| `throw`       | `true`  | Reject on failure, or resolve with `.error`      |
+| `timeout`     | —       | Stop the process after this long                 |
+| `gracePeriod` | `5000`  | Wait before escalating a stop to a kill          |
+| `signal`      | —       | An `AbortSignal`; aborting kills the process     |
+| `env`         | —       | The child's environment, replacing yours         |
+| `cwd`         | —       | Working directory                                |
+
+There is no `color` option, and no size or retention option; both are
+explained below.
 
 ### Choosing a shell
 
@@ -372,8 +374,8 @@ and a mistake surfaces on the line that holds it rather than flowing onward:
 ```
 
 Anything unusual is a stream you supply, because that is what streams are
-for — keeping only the last part of a log, filtering to matching lines,
-counting without storing:
+for — filtering to matching lines, counting without storing, forwarding
+somewhere else:
 
 ```javascript
 await sh({ output: [process.stdout, myTransform] })`./noisy.sh`;
@@ -384,6 +386,40 @@ all of it. The one hard edge is that a JavaScript string cannot hold more
 than about 512MB; a command producing more fails with an error naming the
 command and the remedies, rather than handing you something that looks
 complete and is not.
+
+### Keeping part of a long log: `head` and `tail`
+
+Two bounded writables ship with the library, because they are the ones you
+would otherwise write yourself and get subtly wrong:
+
+```javascript
+import { sh, tail } from "sh-cmd-tag";
+
+const log = tail("64kB");
+await sh({ output: [process.stdout, log] })`make -j8`;
+
+report(log.text);
+```
+
+`tail(size)` keeps the last bytes and `head(size)` the first — one for a
+build that died at the end, the other for a compiler whose first error
+caused every later one. Each is an ordinary writable, so a port takes it
+like any other destination, and `text` is what it kept.
+
+They ship because trimming a byte buffer to a limit cuts multi-byte
+characters in half. A hand-rolled version works on ASCII and then corrupts
+the first accented word or emoji in a build log; these stop at a character
+boundary instead, so you get one character fewer rather than a broken one.
+That is the whole difference, and it is invisible until it bites.
+
+A size is a number of bytes, or a string whose unit is visible at the call
+site — `"512B"`, `"64kB"`, `"8MiB"`. `kB`, `MB`, and `GB` count in
+thousands; `KiB`, `MiB`, and `GiB` in units of 1024. A string without a unit
+is an error rather than a guess, and so is `Infinity`, since keeping
+everything is what `true` on the port already does.
+
+They are deliberately the only two. Filtering, counting, and matching are
+application-specific, and the port already accepts a writable of your own.
 
 ### Shortcuts are just settings
 

@@ -812,6 +812,234 @@ function joinCapture(chunks) {
   return Buffer.concat(chunks).toString();
 }
 
+/**
+ * Keeps at most `size` bytes from the start of what is written, and exposes
+ * them as `text`.
+ *
+ * Retention on a port is all or nothing, and anything else is a writable the
+ * caller supplies. That promise is only honest if writing one is easy, and
+ * it is not: trimming a byte buffer to a limit cuts multi-byte characters in
+ * half, so a hand-rolled version works on ASCII and corrupts the first
+ * accented word in a build log. These two are the ones worth shipping —
+ * `head` for a compiler whose first error caused every later one, `tail` for
+ * a build that died at the end. Filtering, counting, and matching stay in
+ * the caller's own writable, which the port model already accepts.
+ *
+ *     const log = tail("64kB");
+ *     await sh({ output: [process.stdout, log] })`make -j8`;
+ *     report(log.text);
+ */
+function head(size) {
+  return new BoundedText(toBytes(size, "head"), { keepLast: false });
+}
+
+/**
+ * Keeps at most `size` bytes from the end of what is written.
+ */
+function tail(size) {
+  return new BoundedText(toBytes(size, "tail"), { keepLast: true });
+}
+
+const SIZE_PATTERN = /^(\d+(?:\.\d+)?)(B|kB|MB|GB|KiB|MiB|GiB)$/i;
+const SIZE_UNITS = {
+  b: 1,
+  kb: 1e3,
+  mb: 1e6,
+  gb: 1e9,
+  kib: 1024,
+  mib: 1024 ** 2,
+  gib: 1024 ** 3,
+};
+
+/**
+ * Converts a size to a whole number of bytes.
+ *
+ * Numbers are already bytes. Strings carry an explicit unit, for the same
+ * reason a duration does: the unit belongs at the call site, where it can be
+ * read. Both families are accepted rather than one guessed at, because `kB`
+ * and `KiB` differ and only the caller knows which they meant.
+ */
+function toBytes(value, name) {
+  if (value === Infinity) {
+    throw new TypeError(
+      `${name}(Infinity): keeping everything is what a port already does. ` +
+      `Use \`true\` on the port instead of a bounded writable.`
+    );
+  }
+  if (typeof value === "number") {
+    if (!Number.isInteger(value) || value < 1) {
+      throw new TypeError(
+        `${name}(${value}): a size is a whole number of bytes, at least one.`
+      );
+    }
+    return value;
+  }
+  if (typeof value !== "string") {
+    throw new TypeError(
+      `${name}: a size is a number of bytes, or a string with a unit such ` +
+      `as "64kB".`
+    );
+  }
+
+  const match = SIZE_PATTERN.exec(value.trim());
+  if (!match) {
+    throw new TypeError(
+      `${name}: "${value}" is not a size. Use a number of bytes, or a ` +
+      `string with a unit such as "64kB" — "kB", "MB", and "GB" count in ` +
+      `thousands, "KiB", "MiB", and "GiB" in units of 1024.`
+    );
+  }
+
+  const bytes = Math.floor(
+    Number(match[1]) * SIZE_UNITS[match[2].toLowerCase()]
+  );
+  if (bytes < 1) {
+    throw new TypeError(`${name}: "${value}" is less than one byte.`);
+  }
+  return bytes;
+}
+
+/**
+ * A writable that keeps one end of what is written to it.
+ *
+ * `head` and `tail` are this class with the end it drops from reversed,
+ * which is why they ship together: shipping one would be an arbitrary
+ * asymmetry over a comparison.
+ *
+ * Chunks are kept whole and dropped whole wherever possible, so a long
+ * stream costs one pass rather than a copy per write.
+ */
+class BoundedText extends Writable {
+  #limit;
+  #keepLast;
+  #chunks = [];
+  #length = 0;
+  #dropped = false;
+
+  constructor(limit, { keepLast }) {
+    super();
+    this.#limit = limit;
+    this.#keepLast = keepLast;
+  }
+
+  _write(chunk, encoding, callback) {
+    const bytes = Buffer.isBuffer(chunk)
+      ? chunk
+      : Buffer.from(chunk, encoding);
+
+    if (this.#keepLast) {
+      this.#appendDroppingTheStart(bytes);
+    } else {
+      this.#appendDroppingTheEnd(bytes);
+    }
+    callback();
+  }
+
+  #appendDroppingTheEnd(bytes) {
+    const room = this.#limit - this.#length;
+    if (bytes.length > room) {
+      this.#dropped = true;
+    }
+    if (room <= 0) {
+      return;
+    }
+
+    const kept = bytes.length <= room ? bytes : bytes.subarray(0, room);
+    this.#chunks.push(kept);
+    this.#length += kept.length;
+  }
+
+  #appendDroppingTheStart(bytes) {
+    this.#chunks.push(bytes);
+    this.#length += bytes.length;
+
+    // Whole chunks the limit no longer needs go first, so the common case
+    // is a shift rather than a copy.
+    while (
+      this.#chunks.length > 1 &&
+      this.#length - this.#chunks[0].length >= this.#limit
+    ) {
+      this.#length -= this.#chunks.shift().length;
+      this.#dropped = true;
+    }
+    if (this.#length > this.#limit) {
+      this.#chunks[0] = this.#chunks[0].subarray(this.#length - this.#limit);
+      this.#length = this.#limit;
+      this.#dropped = true;
+    }
+  }
+
+  get text() {
+    const bytes = Buffer.concat(this.#chunks, this.#length);
+
+    // Nothing was cut, so nothing can be half a character.
+    if (!this.#dropped) {
+      return bytes.toString();
+    }
+
+    return this.#keepLast
+      ? bytes.subarray(firstWholeCharacter(bytes)).toString()
+      : bytes.subarray(0, endOfLastWholeCharacter(bytes)).toString();
+  }
+}
+
+// UTF-8 writes a character as a lead byte followed by continuation bytes,
+// every one of which matches 0b10xxxxxx. A cut at a byte offset can land
+// inside a character, and a buffer that simply hands back the halves is how
+// a log grows a replacement character in front of its first accented word.
+const CONTINUATION_MASK = 0b11000000;
+const CONTINUATION_BITS = 0b10000000;
+const MAX_CHARACTER_BYTES = 4;
+
+function isContinuationByte(byte) {
+  return (byte & CONTINUATION_MASK) === CONTINUATION_BITS;
+}
+
+/**
+ * Where the first whole character starts.
+ *
+ * Continuation bytes at the front are the remains of a character whose lead
+ * byte was dropped. There can be at most three of them, so the search stops
+ * there rather than scanning a buffer of garbage to its end.
+ */
+function firstWholeCharacter(bytes) {
+  const edge = bytes.subarray(0, MAX_CHARACTER_BYTES - 1);
+  const leadByte = edge.findIndex((byte) => !isContinuationByte(byte));
+  return leadByte === -1 ? edge.length : leadByte;
+}
+
+/**
+ * Where the last whole character ends.
+ *
+ * The lead byte says how many bytes its character takes. If more were
+ * promised than are present, the character was cut and goes.
+ */
+function endOfLastWholeCharacter(bytes) {
+  const start = Math.max(0, bytes.length - MAX_CHARACTER_BYTES);
+  const edge = bytes.subarray(start);
+  const leadByte = edge.findLastIndex((byte) => !isContinuationByte(byte));
+  if (leadByte === -1) {
+    return bytes.length;
+  }
+
+  const present = edge.length - leadByte;
+  const promised = characterWidth(edge[leadByte]);
+  return promised > present ? bytes.length - present : bytes.length;
+}
+
+function characterWidth(leadByte) {
+  if (leadByte < 0b10000000) {
+    return 1;
+  }
+  if (leadByte >= 0b11110000) {
+    return 4;
+  }
+  if (leadByte >= 0b11100000) {
+    return 3;
+  }
+  return 2;
+}
+
 const DURATION_PATTERN = /^(\d+(?:\.\d+)?)(ms|s|m|h)$/;
 const DURATION_UNITS = { ms: 1, s: 1000, m: 60000, h: 3600000 };
 
@@ -848,13 +1076,6 @@ function toMilliseconds(value, key) {
   return Number(match[1]) * DURATION_UNITS[match[2]];
 }
 
-/**
- * Builds the child environment, honouring the colour conventions.
- *
- * Exactly one variable is ever set. Precedence between them is
- * implementation-dependent, so setting both would make behaviour depend on
- * which tool the caller happened to run.
- */
 /**
  * The environment the child runs in.
  *
@@ -1992,6 +2213,8 @@ class Pipeline {
 export {
   sh,
   cmd,
+  head,
+  tail,
   ProcessResult,
   ProcessError,
   markSafeString,
