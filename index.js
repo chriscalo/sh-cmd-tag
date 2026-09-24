@@ -949,6 +949,63 @@ function deepFreeze(value) {
  * Process class that encapsulates child process execution with streaming
  * output and enhanced control capabilities.
  */
+/**
+ * Commands still running, so they can be ended when this process is.
+ *
+ * Every command is spawned into its own process group, which is what lets
+ * `stop()` reach the command *and everything it spawned* without signalling
+ * this process too. The same separation means nothing ties the group's
+ * lifetime to ours: without this, a command outlives the program that
+ * started it — including on Ctrl-C, which is how most scripts end. A leaked
+ * dev server keeps its port bound and its watchers running, so the next run
+ * fails with "address already in use", pointing nowhere near the cause.
+ *
+ * `process.on("exit")` alone is not enough, because exit handlers do not run
+ * when a process is killed by a signal. So the signals that ordinarily end a
+ * program are handled too, and afterwards the default behaviour is allowed
+ * to happen rather than swallowed.
+ *
+ * What this cannot cover is SIGKILL and a hard crash, where no code of ours
+ * runs at all. Closing that needs a supervisor holding a pipe, or a
+ * pseudo-terminal whose hangup the kernel delivers. Every library built on
+ * handlers has the same hole.
+ */
+const liveGroups = new Set();
+let exitHooksInstalled = false;
+
+const SIGNALS_THAT_END_US = ["SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT"];
+
+function endLiveGroups() {
+  for (const pid of liveGroups) {
+    try {
+      process.kill(-pid, "SIGTERM");
+    } catch {
+      // Already gone, or never had a group. Nothing to do either way.
+    }
+  }
+  liveGroups.clear();
+}
+
+function installExitHooks() {
+  if (exitHooksInstalled) return;
+  exitHooksInstalled = true;
+
+  process.on("exit", endLiveGroups);
+
+  for (const signal of SIGNALS_THAT_END_US) {
+    process.on(signal, () => {
+      endLiveGroups();
+      // Only take over the exit when nothing else is listening. A caller
+      // with their own handler has their own intentions, and ending the
+      // program on their behalf would override them.
+      if (process.listenerCount(signal) === 1) {
+        process.removeAllListeners(signal);
+        process.kill(process.pid, signal);
+      }
+    });
+  }
+}
+
 class Process {
   static #defaults = { immediate: true, shell: true };
   
@@ -1120,6 +1177,11 @@ class Process {
       },
     );
     
+    installExitHooks();
+    if (this.#childProcess.pid !== undefined) {
+      liveGroups.add(this.#childProcess.pid);
+    }
+
     this.#bridgeStreams();
     this.#connectInput();
     this.#connectAbortSignal();
@@ -1283,6 +1345,10 @@ class Process {
       if (this.#settled) return;
       this.#settled = true;
       clearTimeout(this.#timeoutTimer);
+
+      // Finished, so there is no group worth signalling any more — and the
+      // pid could later be reused by something unrelated.
+      liveGroups.delete(this.#childProcess?.pid);
       
       // An inherited stdin holds the event loop open long after the child is
       // gone, so release it the moment the process settles.

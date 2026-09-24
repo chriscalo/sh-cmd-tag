@@ -3631,3 +3631,62 @@ test("omitting env inherits the caller's environment", async () => {
     else process.env.SH_CMD_TAG_PROBE = previous;
   }
 });
+
+// --- commands do not outlive the program that started them -----------------
+
+test("a command is ended when the program that started it ends", async () => {
+  // Each command leads its own process group so stop() can reach it and
+  // everything it spawned without signalling us too. Nothing then ties the
+  // group's lifetime to ours, so a command outlived the program that
+  // started it — including on Ctrl-C, which is how most scripts end.
+  //
+  // Driven from a real child process, because the behaviour under test is
+  // what happens when a process ends, which cannot be observed from inside
+  // the process it is happening to.
+  const { writeFileSync, unlinkSync } = await import("node:fs");
+  const script = `/tmp/sh-cmd-tag-exit-${process.pid}.mjs`;
+  const here = new URL("./index.js", import.meta.url).pathname;
+  writeFileSync(
+    script,
+    `const { sh } = await import(${JSON.stringify(here)});\n` +
+    "const p = sh`sleep 517 & echo $!; wait`;\n" +
+    "p.output.on('data', (c) => {\n" +
+    "  const pid = String(c).trim().split('\\n')[0];\n" +
+    "  if (/^\\d+$/.test(pid)) process.stderr.write(pid + '\\n');\n" +
+    "});\n" +
+    "setInterval(() => {}, 1000);\n",
+  );
+
+  const alive = (pid) => {
+    try { process.kill(pid, 0); return true; } catch { return false; }
+  };
+
+  const endedBy = async (signal) => {
+    const child = spawn("node", [script], {
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    let seen = "";
+    child.stderr.on("data", (chunk) => { seen += chunk; });
+    await new Promise((resolve) => setTimeout(resolve, 900));
+    const grandchild = Number(seen.trim().split("\n")[0]);
+    child.kill(signal);
+    await new Promise((resolve) => setTimeout(resolve, 900));
+    const survived = alive(grandchild);
+    if (survived) { try { process.kill(grandchild, "SIGKILL"); } catch {} }
+    return survived ? "survived" : "ended";
+  };
+
+  try {
+    const actual = {
+      interrupt: await endedBy("SIGINT"),
+      terminate: await endedBy("SIGTERM"),
+      hangup: await endedBy("SIGHUP"),
+    };
+    const expected = {
+      interrupt: "ended", terminate: "ended", hangup: "ended",
+    };
+    assert.deepEqual(actual, expected);
+  } finally {
+    try { unlinkSync(script); } catch {}
+  }
+});
