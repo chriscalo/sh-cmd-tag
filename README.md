@@ -305,6 +305,12 @@ error.timedOut;  // true when `timeout` did it
 error.aborted;   // true when an `AbortSignal` did it
 ```
 
+`timedOut` and `aborted` are never both set. Stopping is not instantaneous
+— it terminates politely and escalates — so a deadline and an abort can both
+arrive before the command is gone, and only the one that *began* the
+shutdown is reported. Otherwise the order you check them in would decide the
+answer.
+
 `code` is the exit code the command chose, the platform's errno string when
 the spawn itself failed — `"ENOENT"` for a command that does not exist — and
 `undefined` when a signal ended it before it could choose one. `sync` reports

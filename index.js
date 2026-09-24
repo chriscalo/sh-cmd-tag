@@ -1453,8 +1453,13 @@ class Process {
   #resolve;
   #reject;
   #settled = false;
-  #timedOut = false;
-  #aborted = false;
+  // What began the shutdown, recorded once. `stop()` is not instantaneous —
+  // it terminates politely and escalates — so a deadline and an abort can
+  // both arrive before the child is gone, and setting both flags made the
+  // documented order of checks give the wrong answer: a timed-out command
+  // read as a cancelled one, and the caller skipped the retry it wanted.
+  // Only the reason that actually started the shutdown is reported.
+  #endedBy = null;
   #timeoutTimer;
   #inputChunks = [];
   #outputChunks = [];
@@ -1789,7 +1794,7 @@ class Process {
     // An abort means now, everywhere else in the platform, so it maps to
     // kill() rather than the graceful stop().
     if (signal.aborted) {
-      this.#aborted = true;
+      this.#endBecause("abort");
       this.kill();
       return;
     }
@@ -1798,7 +1803,7 @@ class Process {
     // listener per command, each retaining a finished Process along with its
     // streams and captured output.
     this.#abortListener = () => {
-      this.#aborted = true;
+      this.#endBecause("abort");
       this.kill();
     };
     signal.addEventListener("abort", this.#abortListener, { once: true });
@@ -2013,7 +2018,7 @@ class Process {
     child.on("close", (code, signal) => {
       // A well-behaved child handles termination and exits 0, so exit status
       // alone cannot tell a completed command from one that ran out of time.
-      if (code === 0 && !this.#timedOut) {
+      if (code === 0 && !this.#timedOut()) {
         finish(null);
         return;
       }
@@ -2027,10 +2032,10 @@ class Process {
         ? undefined
         : endedBySignal(signal, this.#commandString);
 
-      let message = this.#timedOut
+      let message = this.#timedOut()
         ? `Command timed out: ${this.#commandString}`
         : killed?.message ?? `Command failed with exit code ${code}`;
-      if (!this.#timedOut && !killed && trimmedDebug) {
+      if (!this.#timedOut() && !killed && trimmedDebug) {
         message += `: ${trimmedDebug}`;
       }
 
@@ -2040,14 +2045,14 @@ class Process {
         output: "",
         debug: "",
       });
-      if (this.#timedOut) {
+      if (this.#timedOut()) {
         error.timedOut = true;
       }
       // Why it was killed, when this library is what killed it. A caller
       // composing `AbortSignal.any([request.signal, ...])` — the shape the
       // README recommends — otherwise cannot tell a cancelled command from
       // a crashed one.
-      if (this.#aborted) {
+      if (this.#aborted()) {
         error.aborted = true;
       }
       if (signal) {
@@ -2057,6 +2062,27 @@ class Process {
     });
   }
   
+  /**
+   * Records what began the shutdown, the first time anything does.
+   *
+   * Later causes are real but they are not the reason: once a deadline has
+   * started a polite termination, an abort arriving during the grace
+   * period did not end the command, it joined in.
+   */
+  #endBecause(reason) {
+    if (this.#endedBy === null) {
+      this.#endedBy = reason;
+    }
+  }
+
+  #timedOut() {
+    return this.#endedBy === "timeout";
+  }
+
+  #aborted() {
+    return this.#endedBy === "abort";
+  }
+
   #armTimeout() {
     const timeout = toMilliseconds(this.#config.timeout, "timeout");
     if (timeout === undefined || timeout === Infinity) {
@@ -2065,7 +2091,7 @@ class Process {
     // The clock starts here, when the process starts, rather than at
     // construction: a deferred process could otherwise expire unrun.
     this.#timeoutTimer = setTimeout(() => {
-      this.#timedOut = true;
+      this.#endBecause("timeout");
       this.stop();
     }, timeout);
     this.#timeoutTimer.unref?.();

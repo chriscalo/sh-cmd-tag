@@ -756,13 +756,18 @@ class Process {
   `interrupt()`, abort, and outside `kill` printed it. One helper now builds
   this for both paths, so they cannot drift again.
 
-- **`timedOut` and `aborted` say why.** An exit code cannot distinguish a
-  cancelled command from a crashed one, and cancellation exists precisely so
-  that a caller can tell. `timedOut` was already there for a deadline;
-  `aborted` is its counterpart for an `AbortSignal`, set when this library
-  is what killed the process in response to one. They are flags rather than
-  a single `reason` enum because they are independent of the signal, which
-  is also reported.
+- **`timedOut` and `aborted` say why, and never both.** An exit code cannot
+  distinguish a cancelled command from a crashed one, and cancellation
+  exists precisely so that a caller can tell. `timedOut` was already there
+  for a deadline; `aborted` is its counterpart for an `AbortSignal`.
+
+  Only the reason that *began* the shutdown is recorded. `stop()` is not
+  instantaneous — it terminates politely and escalates after `gracePeriod` —
+  so a deadline and an abort can both arrive before the child is gone, and
+  the first version of this set both. That made the order of a caller's
+  checks decide the answer: the documented `if (error.aborted) return;`
+  swallowed a timeout and skipped the retry it was written to trigger. A
+  later cause is real but it is not the reason, so it is not recorded.
 
 - **`.sync` honours an abort raised before the call**, refusing to run the
   command, because the alternative was `signal` meaning two different things

@@ -2382,6 +2382,44 @@ test("code is a number, an errno, or nothing — never a second spelling", async
   assert.deepEqual(actual, expected);
 });
 
+test("only the reason that began the shutdown is reported", async () => {
+  // `stop()` is not instantaneous — it terminates politely and escalates —
+  // so a deadline and an abort can both arrive before the child is gone.
+  // Setting both flags made the documented order of checks give the wrong
+  // answer: `if (error.aborted) return;` swallowed a timeout, and the
+  // caller skipped the retry it wanted. Whichever started it wins.
+  const controller = new AbortController();
+  const timedOutThenAborted = sh.safe({
+    timeout: "150ms",
+    gracePeriod: "5s",
+    signal: controller.signal,
+  })`sh -c 'trap "" TERM; sleep 30'`;
+  // Inside the grace period the timeout opened, so the command is already
+  // on its way out when the abort lands.
+  setTimeout(() => controller.abort(), 400);
+
+  const abortedOnly = await (async () => {
+    const solo = new AbortController();
+    const proc = sh.safe({ signal: solo.signal })`sleep 30`;
+    setTimeout(() => solo.abort(), 50);
+    return (await proc).error;
+  })();
+
+  const reasonOf = (error) => ({
+    timedOut: error.timedOut ?? false,
+    aborted: error.aborted ?? false,
+  });
+  const actual = {
+    timeoutWon: reasonOf((await timedOutThenAborted).error),
+    abortAlone: reasonOf(abortedOnly),
+  };
+  const expected = {
+    timeoutWon: { timedOut: true, aborted: false },
+    abortAlone: { timedOut: false, aborted: true },
+  };
+  assert.deepEqual(actual, expected);
+});
+
 test("sync refuses a command whose signal has already been aborted", async () => {
   // Asynchronously, an aborted signal kills at once. This path used to
   // ignore `signal` and run the command anyway, so one option meant two
