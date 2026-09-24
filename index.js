@@ -377,15 +377,23 @@ function executeCommand(strings, values, useShell, isSync, options = {}) {
 }
 
 function buildShellExpression(strings, values) {
+  // The raw strings, not the cooked ones. JavaScript processes escape
+  // sequences in a template before anyone sees it, which is wrong when the
+  // text is destined for a shell: `grep '\d'` would arrive as `grep 'd'`,
+  // silently searching for a letter. Worse, an escape JavaScript considers
+  // invalid — an octal like \033 — makes the cooked string `undefined`
+  // while the raw one survives, so the command became the literal text
+  // "undefined". Backslashes belong to the shell, so they are left alone.
+  const parts = strings.raw ?? strings;
   let command = "";
-  for (let i = 0; i < strings.length; i++) {
-    command += strings[i];
+  for (let i = 0; i < parts.length; i++) {
+    command += parts[i];
     if (i < values.length) {
       // Determine the context for this interpolation
-      const beforeValue = strings[i];
-      const afterValue = i + 1 < strings.length ? strings[i + 1] : "";
+      const beforeValue = parts[i];
+      const afterValue = i + 1 < parts.length ? parts[i + 1] : "";
       const context = getInterpolationContext(beforeValue, afterValue);
-      
+
       const safeValue = valueToShellString(values[i], context);
       command += safeValue;
     }
@@ -471,9 +479,12 @@ function templateEscape(str, context = { type: "unquoted" }) {
 }
 
 function buildCommandString(strings, values) {
+  // Raw, for the same reason as buildShellExpression: escape sequences in
+  // the template belong to the command, not to JavaScript.
+  const parts = strings.raw ?? strings;
   let command = "";
-  for (let i = 0; i < strings.length; i++) {
-    command += strings[i];
+  for (let i = 0; i < parts.length; i++) {
+    command += parts[i];
     if (i < values.length) {
       const valueStr = valueToCommandString(values[i]);
       command += valueStr;

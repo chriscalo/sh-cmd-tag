@@ -3496,3 +3496,57 @@ test("a synchronous command is not cut off at one megabyte", async () => {
     try { unlinkSync(script); } catch {}
   }
 });
+
+// --- backslashes belong to the shell, not to JavaScript --------------------
+
+test("an identity escape keeps its backslash", async () => {
+  // Cooked template strings have already had their escapes processed by
+  // JavaScript, so `\d` arrived at the shell as `d` and grep searched for
+  // a letter — a wrong answer, with no error at all. Raw keeps the
+  // backslash, because it belongs to the command.
+  const actual = {
+    digit: (await sh.safe`printf 'a1\n' | grep '\d'`).output,
+    space: (await sh.safe`printf 'a b\n' | grep '\s'`).output,
+  };
+  const expected = { digit: "a1\n", space: "a b\n" };
+  assert.deepEqual(actual, expected);
+});
+
+test("an invalid escape no longer makes the whole command undefined",
+  async () => {
+    // A template holding an escape JavaScript rejects — an octal like
+    // \033 — has an `undefined` cooked value while `raw` survives. Built
+    // from cooked, the command became the literal text "undefined" and
+    // failed with "command not found", telling the caller nothing.
+    const result = await sh`printf '\033[31mRED\033[0m'`;
+
+    const actual = result.output;
+    const expected = "[31mRED[0m";
+    assert.equal(actual, expected);
+  });
+
+test("escape sequences in a template are the command's to interpret",
+  async () => {
+    // printf understands \n and \t. It now receives the two characters
+    // and decides for itself, which is what the same text typed into a
+    // shell would do.
+    const actual = {
+      newline: (await sh`printf 'a\nb'`).output,
+      tab: (await sh`printf 'a\tb'`).output,
+    };
+    const expected = { newline: "a\nb", tab: "a\tb" };
+    assert.deepEqual(actual, expected);
+  });
+
+test("a backslash inside an interpolated value is still escaped", async () => {
+  // Raw applies to the literal parts of the template only. Values are
+  // still escaped, so a backslash in one stays data rather than becoming
+  // shell syntax.
+  const value = "a\\b";
+  const actual = {
+    sh: (await sh`printf '%s' ${value}`).output,
+    cmd: (await cmd`printf '%s' ${value}`).output,
+  };
+  const expected = { sh: "a\\b", cmd: "a\\b" };
+  assert.deepEqual(actual, expected);
+});
