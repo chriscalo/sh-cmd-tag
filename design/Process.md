@@ -679,6 +679,30 @@ class Process {
   the child's trimmed stderr appended after a colon when there is any. That
   is what makes a "command not found" failure name the command that was not
   found, rather than reporting a bare number.
+- A command a signal ended has no exit code, so it does not report one:
+  `code` is `undefined`, `signal` names what ended it, and the message is
+  `Command was killed by SIGTERM: <command>`.
+
+  This is the missing-command lesson applied a second time. Both paths used
+  to say `Command failed with exit code null` — a number that was never
+  there — and then disagree about what to put beside it, `128` from the
+  asynchronous path and `null` from `.sync`. Every `stop()`, `kill()`,
+  `interrupt()`, abort, and outside `kill` printed it. One helper now builds
+  this for both paths, so they cannot drift again.
+
+- **`timedOut` and `aborted` say why.** An exit code cannot distinguish a
+  cancelled command from a crashed one, and cancellation exists precisely so
+  that a caller can tell. `timedOut` was already there for a deadline;
+  `aborted` is its counterpart for an `AbortSignal`, set when this library
+  is what killed the process in response to one. They are flags rather than
+  a single `reason` enum because they are independent of the signal, which
+  is also reported.
+
+- **`.sync` honours an abort raised before the call**, refusing to run the
+  command, because the alternative was `signal` meaning two different things
+  depending on how the command was called. An abort arriving *during* the
+  call is unobservable — nothing is observable during a blocking call — and
+  that is the same bargain `timeout` strikes on this path.
 - `config` is deep-frozen, including nested objects, so a caller cannot mutate
   a running process's configuration.
 
@@ -902,6 +926,13 @@ measured from construction could expire before anything ran.
 `ProcessError.code` already holds the numeric exit code, so `"ETIMEDOUT"`
 there would overload one field with two types, and a `TimeoutError` subclass
 forces `instanceof` checks on callers who want a boolean.
+
+`.sync` put `"ETIMEDOUT"` there anyway — this paragraph argued against the
+thing the code beside it did, and the asynchronous path reported `null` for
+the same case, so one fact had two spellings across two paths. `code` is now
+the exit code the command chose, the platform's errno string when the spawn
+itself failed, and `undefined` when a signal ended the command before it
+could choose one.
 
 **Shape: flat, not nested.** `timeout: { after, gracePeriod }` groups the
 related keys, but "just give me a deadline" is the common case by a wide

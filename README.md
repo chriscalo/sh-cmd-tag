@@ -217,13 +217,23 @@ A process accepts an `AbortSignal`, so it composes with anything else that
 speaks that protocol:
 
 ```javascript
-const signal = AbortSignal.any([request.signal, AbortSignal.timeout("30s")]);
+const signal = AbortSignal.any([request.signal, AbortSignal.timeout(30_000)]);
 
 const svg = await fetch(url, { signal });
 const png = await sh({ signal })`convert - out.png`;
 ```
 
-Aborting kills the process, because `abort` means now.
+Aborting kills the process, because `abort` means now, and the rejection
+carries `aborted: true` so a cancelled command is distinguishable from a
+failed one.
+
+`sync` honours an abort raised before the call and refuses to run the
+command. One arriving during the call cannot be seen, because nothing can be
+seen during a blocking call — the same bargain `timeout` strikes there.
+
+Note that `AbortSignal.timeout` is Node's, and takes milliseconds as a
+number. The duration strings above are this library's, and are understood by
+`timeout` and `gracePeriod` — not by anything outside it.
 
 ## Deferred execution
 
@@ -252,6 +262,36 @@ try {
   error.code;    // exit code
   error.output;  // stdout, when the port kept it
   error.debug;   // stderr, when the port kept it
+}
+```
+
+### Why it ended
+
+An exit code is only one of the answers. A command a signal ended never
+picked one, so `code` is `undefined` and `signal` names what ended it — and
+three flags say whose doing it was:
+
+```javascript
+error.signal;    // "SIGTERM" — a signal ended it, so there is no exit code
+error.timedOut;  // true when `timeout` did it
+error.aborted;   // true when an `AbortSignal` did it
+```
+
+`code` is the exit code the command chose, the platform's errno string when
+the spawn itself failed — `"ENOENT"` for a command that does not exist — and
+`undefined` when a signal ended it before it could choose one. `sync` reports
+all of it identically.
+
+Without these a cancelled command, a timed-out one, and a crashed one all
+look alike — which matters most in exactly the case cancellation is for:
+
+```javascript
+try {
+  await sh({ signal })`convert - out.png`;
+} catch (error) {
+  if (error.aborted) return;        // the caller went away; not a problem
+  if (error.timedOut) return retry();
+  throw error;                      // a real failure
 }
 ```
 

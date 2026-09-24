@@ -72,6 +72,28 @@ class ProcessError extends Error {
   }
 }
 
+/**
+ * How a command that a signal ended reports itself.
+ *
+ * A signalled command has no exit code — the kernel never let it pick one.
+ * Saying `Command failed with exit code null` is the number that was never
+ * there dressed up as one, and it is what every `stop()`, `kill()`,
+ * `interrupt()`, abort, and outside `kill` used to print.
+ *
+ * So the signal is the answer: it names what ended the command, and `code`
+ * is `undefined` because absence means absence. The same reasoning settled
+ * the missing-command case, where inventing `127` made the two execution
+ * paths disagree about one failure; both paths build this here for the same
+ * reason.
+ */
+function endedBySignal(signal, command) {
+  return {
+    message: `Command was killed by ${signal}: ${command}`,
+    code: undefined,
+    signal,
+  };
+}
+
 // Factory function to create execution tag functions
 function makeExecTag(useShell, isSync = false) {
   return function execTag(strings, ...values) {
@@ -153,6 +175,36 @@ function executeSyncCommand(cmd, args, spawnOptions, inputData, options) {
   const out = resolveOutputPort(options.output);
   const err = resolveOutputPort(options.debug);
 
+  // An abort already raised means the command does not run, exactly as it
+  // does asynchronously — where `sh({ signal })` on an aborted signal kills
+  // at once. This path used to ignore `signal` altogether and run the
+  // command regardless, which made one option mean two different things
+  // depending on how it was called.
+  //
+  // An abort arriving *during* the call cannot be seen, because nothing can
+  // see anything during a blocking call. That is the same bargain `timeout`
+  // strikes here, and the deadline is enforced by spawnSync for the same
+  // reason.
+  if (options.signal?.aborted) {
+    const error = new ProcessError({
+      message: `Command was not run, because its signal was already ` +
+        `aborted: ${cmd}`,
+      code: undefined,
+      output: out.keep ? "" : undefined,
+      debug: err.keep ? "" : undefined,
+    });
+    error.aborted = true;
+    if (options.throw !== false) {
+      throw error;
+    }
+    return new ProcessResult({
+      ok: false,
+      error,
+      output: error.output,
+      debug: error.debug,
+    });
+  }
+
   try {
     const result = spawnSync(cmd, args, {
       ...spawnOptions,
@@ -185,16 +237,24 @@ function executeSyncCommand(cmd, args, spawnOptions, inputData, options) {
     const debug = err.keep ? wholeDebug : undefined;
 
     if (result.error || timedOut) {
+      // A spawn failure keeps the errno string the platform reported, which
+      // is what makes a missing command say `ENOENT`. A deadline does not:
+      // `"ETIMEDOUT"` in `code` would overload one field with two types to
+      // say what `timedOut` already says, and the command has no exit code
+      // to report because a signal ended it.
       const error = new ProcessError({
         message: timedOut
           ? `Command timed out: ${cmd}`
           : result.error.message,
-        code: timedOut ? (result.status ?? "ETIMEDOUT") : result.error.code,
+        code: timedOut ? undefined : result.error.code,
         output,
         debug,
       });
       if (timedOut) {
         error.timedOut = true;
+        if (result.signal) {
+          error.signal = result.signal;
+        }
       }
       if (options.throw !== false) {
         throw error;
@@ -203,20 +263,27 @@ function executeSyncCommand(cmd, args, spawnOptions, inputData, options) {
     }
     
     if (result.status !== 0) {
-      // Create a more informative error message
-      let errorMessage = `Command failed with exit code ${result.status}`;
-      if (debug && debug.trim()) {
-        // Include stderr information in the error message for better
-        // diagnostics
+      const killed = result.signal
+        ? endedBySignal(result.signal, cmd)
+        : undefined;
+
+      let errorMessage = killed?.message
+        ?? `Command failed with exit code ${result.status}`;
+      // stderr after a colon, which is what makes a "command not found"
+      // failure name the command that was not found.
+      if (!killed && debug && debug.trim()) {
         errorMessage += `: ${debug.trim()}`;
       }
-      
+
       const error = new ProcessError({
         message: errorMessage,
-        code: result.status,
+        code: killed ? killed.code : result.status,
         output,
         debug,
       });
+      if (killed) {
+        error.signal = killed.signal;
+      }
       if (options.throw !== false) {
         throw error;
       }
@@ -1282,6 +1349,7 @@ class Process {
   #reject;
   #settled = false;
   #timedOut = false;
+  #aborted = false;
   #timeoutTimer;
   #inputChunks = [];
   #outputChunks = [];
@@ -1568,6 +1636,7 @@ class Process {
     // An abort means now, everywhere else in the platform, so it maps to
     // kill() rather than the graceful stop().
     if (signal.aborted) {
+      this.#aborted = true;
       this.kill();
       return;
     }
@@ -1575,7 +1644,10 @@ class Process {
     // signal reused across many short commands would otherwise accumulate a
     // listener per command, each retaining a finished Process along with its
     // streams and captured output.
-    this.#abortListener = () => this.kill();
+    this.#abortListener = () => {
+      this.#aborted = true;
+      this.kill();
+    };
     signal.addEventListener("abort", this.#abortListener, { once: true });
   }
   
@@ -1787,20 +1859,35 @@ class Process {
       // stderr is appended when present, which is what makes a "command not
       // found" failure name the command that was not found.
       const trimmedDebug = joinCapture(this.#debugChunks).trim();
+      // That a signal ended the command and why it was sent are separate
+      // facts, so a deadline keeps its own message while still reporting no
+      // exit code: there is none either way.
+      const killed = signal === null
+        ? undefined
+        : endedBySignal(signal, this.#commandString);
+
       let message = this.#timedOut
         ? `Command timed out: ${this.#commandString}`
-        : `Command failed with exit code ${code}`;
-      if (!this.#timedOut && trimmedDebug) {
+        : killed?.message ?? `Command failed with exit code ${code}`;
+      if (!this.#timedOut && !killed && trimmedDebug) {
         message += `: ${trimmedDebug}`;
       }
+
       const error = new ProcessError({
         message,
-        code: code === null ? 128 : code,
+        code: killed ? killed.code : code,
         output: "",
         debug: "",
       });
       if (this.#timedOut) {
         error.timedOut = true;
+      }
+      // Why it was killed, when this library is what killed it. A caller
+      // composing `AbortSignal.any([request.signal, ...])` — the shape the
+      // README recommends — otherwise cannot tell a cancelled command from
+      // a crashed one.
+      if (this.#aborted) {
+        error.aborted = true;
       }
       if (signal) {
         error.signal = signal;

@@ -31,6 +31,14 @@ equivalent. Signals reach the child's whole process group. `timeout` applies
 the same escalation on a deadline and reports `timedOut`. A `signal` option
 accepts an `AbortSignal`.
 
+**Why a command ended.** A command a signal ended never picked an exit code,
+so `code` is `undefined` and `signal` names what ended it, rather than the
+message reporting an exit code of `null`. `timedOut` and `aborted` say
+whether a deadline or a cancellation was responsible, so a caller composing
+`AbortSignal.any([request.signal, AbortSignal.timeout(30_000)])` can tell
+the three apart. `sync` reports all of this identically, and refuses to run
+a command whose signal was aborted before the call.
+
 **Durations** are milliseconds as a number, or a string with a unit —
 `"500ms"`, `"30s"`, `"5m"`, `"1.5h"`. A string without a unit is an error.
 

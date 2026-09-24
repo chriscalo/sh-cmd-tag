@@ -2270,22 +2270,125 @@ test("live composes with the other chainables", async () => {
 
 // --- abort signal ----------------------------------------------------------
 
-test("aborting the signal kills the process", async () => {
-  const { sh } = await import("./index.js");
+test("aborting the signal kills the process, and says that is why", async () => {
+  // `aborted` is to cancellation what `timedOut` is to a deadline. Without
+  // it the shape the README recommends — composing a request's signal with
+  // a timeout — cannot tell a cancelled command from a crashed one, which
+  // is the whole reason a caller reaches for cancellation.
   const controller = new AbortController();
-  const proc = sh({ signal: controller.signal })`sleep 30`;
-  
+  const proc = sh.safe({ signal: controller.signal })`sleep 30`;
   setTimeout(() => controller.abort(), 50);
-  
-  await assert.rejects(async () => { await proc; });
+  const { error } = await proc;
+
+  const actual = {
+    name: error.name,
+    aborted: error.aborted,
+    signal: error.signal,
+    timedOut: error.timedOut,
+  };
+  const expected = {
+    name: "ProcessError",
+    aborted: true,
+    signal: "SIGKILL",
+    timedOut: undefined,
+  };
+  assert.deepEqual(actual, expected);
 });
 
 test("an already-aborted signal kills the process at once", async () => {
-  const { sh } = await import("./index.js");
-  
-  await assert.rejects(
-    async () => { await sh({ signal: AbortSignal.abort() })`sleep 30`; },
-  );
+  const { error } = await sh.safe({ signal: AbortSignal.abort() })`sleep 30`;
+
+  const actual = { name: error.name, aborted: error.aborted };
+  const expected = { name: "ProcessError", aborted: true };
+  assert.deepEqual(actual, expected);
+});
+
+test("a signal that ends a command is named, not reported as an exit code", async () => {
+  // A signalled command has no exit code — the kernel never let it pick
+  // one. Every stop, kill, interrupt, abort, and outside `kill` used to
+  // report `Command failed with exit code null` while carrying `code: 128`
+  // asynchronously and `code: null` synchronously: a number that was never
+  // there, spelled two different ways.
+  const command = `sh -c 'kill -TERM $$'`;
+  const asyncError = (await sh.safe`${markSafeString(command)}`).error;
+  const syncError = sh.sync.safe`${markSafeString(command)}`.error;
+
+  const shapeOf = (error) => ({
+    message: error.message,
+    code: error.code,
+    signal: error.signal,
+  });
+  const actual = { async: shapeOf(asyncError), sync: shapeOf(syncError) };
+  const expected = {
+    async: {
+      message: `Command was killed by SIGTERM: ${command}`,
+      code: undefined,
+      signal: "SIGTERM",
+    },
+    sync: {
+      message: `Command was killed by SIGTERM: ${command}`,
+      code: undefined,
+      signal: "SIGTERM",
+    },
+  };
+  assert.deepEqual(actual, expected);
+});
+
+test("code is a number, an errno, or nothing — never a second spelling", async () => {
+  // One field, one meaning: the exit code the command chose. A spawn
+  // failure keeps the platform's errno string, which is what makes a
+  // missing command say ENOENT. A deadline had `"ETIMEDOUT"` here
+  // synchronously and `null` asynchronously — two spellings of the fact
+  // that `timedOut` already states, in a field the design says holds a
+  // number.
+  const codeOf = (error) => ({
+    code: error.code,
+    timedOut: error.timedOut ?? false,
+  });
+  const actual = {
+    asyncTimeout: codeOf((await sh.safe({ timeout: "200ms" })`sleep 5`).error),
+    syncTimeout: codeOf(sh.sync.safe({ timeout: "200ms" })`sleep 5`.error),
+    asyncMissing: codeOf(
+      (await sh.safe({ shell: false })`definitely-not-a-command`).error),
+    syncMissing: codeOf(
+      sh.sync.safe({ shell: false })`definitely-not-a-command`.error),
+    asyncExit: codeOf((await sh.safe`exit 3`).error),
+    syncExit: codeOf(sh.sync.safe`exit 3`.error),
+  };
+  const expected = {
+    asyncTimeout: { code: undefined, timedOut: true },
+    syncTimeout: { code: undefined, timedOut: true },
+    asyncMissing: { code: "ENOENT", timedOut: false },
+    syncMissing: { code: "ENOENT", timedOut: false },
+    asyncExit: { code: 3, timedOut: false },
+    syncExit: { code: 3, timedOut: false },
+  };
+  assert.deepEqual(actual, expected);
+});
+
+test("sync refuses a command whose signal has already been aborted", async () => {
+  // Asynchronously, an aborted signal kills at once. This path used to
+  // ignore `signal` and run the command anyway, so one option meant two
+  // things depending on how it was called. An abort arriving *during* a
+  // blocking call still cannot be seen, because nothing can see anything
+  // then — the same bargain `timeout` strikes here.
+  const result = sh.sync.safe({ signal: AbortSignal.abort() })`printf ran`;
+
+  const actual = {
+    ok: result.ok,
+    output: result.output,
+    aborted: result.error.aborted,
+    code: result.error.code,
+    namesTheCommand: result.error.message.includes("printf ran"),
+  };
+  const expected = {
+    ok: false,
+    output: "",
+    aborted: true,
+    code: undefined,
+    namesTheCommand: true,
+  };
+  assert.deepEqual(actual, expected);
 });
 
 // --- the tags return processes ---------------------------------------------
