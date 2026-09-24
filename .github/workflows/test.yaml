@@ -1,4 +1,4 @@
-name: test
+name: Run tests
 
 on:
   push:
@@ -11,6 +11,7 @@ permissions:
 
 jobs:
   test:
+    name: Node.js ${{ matrix.node }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
