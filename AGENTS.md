@@ -16,9 +16,13 @@ deliberately. Start there rather than inferring the state from the diff.
 ## Commands
 
 ```sh
-npm test               # the whole suite, ~12s
+npm test               # the whole suite, ~15s
 npm run test:verbose   # same, with debug output
 ```
+
+One suite covers execution, escaping and injection, the stdio ports,
+streaming, pipelines, process control, and every example in `README.md`, so
+a regression anywhere shows up here.
 
 ## Invariants
 
