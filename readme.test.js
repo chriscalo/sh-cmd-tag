@@ -251,10 +251,21 @@ test("README: deferred execution, error handling, and safe", async () => {
   } catch (error) {
     failure = {
       name: error.name,
-      code: error.code,
+      // Not the exact number: GNU `ls` exits 2 where BSD `ls` exits 1, so
+      // pinning one passes on a laptop and fails in CI. The claim the
+      // README makes is that `code` carries the command's exit code, which
+      // the case below checks against a code this test chooses.
+      codeIsTheCommandsOwn: Number.isInteger(error.code) && error.code > 0,
       output: error.output,
       debugHasText: error.debug.length > 0,
     };
+  }
+
+  let chosenCode = "did not throw";
+  try {
+    await sh`exit 42`;
+  } catch (error) {
+    chosenCode = error.code;
   }
 
   writeFileSync("src.js", "const x = 1;\n");
@@ -263,6 +274,7 @@ test("README: deferred execution, error handling, and safe", async () => {
   const actual = {
     handlersAttachedBeforeStart: chunks.join(""),
     errorFields: failure,
+    codeIsWhatTheCommandChose: chosenCode,
     safeReportsNotOk: noMatches.ok,
     thenableCatchSubstitutes: await sh`false`.catch(() => "unknown"),
   };
@@ -270,10 +282,11 @@ test("README: deferred execution, error handling, and safe", async () => {
     handlersAttachedBeforeStart: "deferred\n",
     errorFields: {
       name: "ProcessError",
-      code: 1,
+      codeIsTheCommandsOwn: true,
       output: "",
       debugHasText: true,
     },
+    codeIsWhatTheCommandChose: 42,
     safeReportsNotOk: false,
     thenableCatchSubstitutes: "unknown",
   };
@@ -320,8 +333,14 @@ test("README: driving a command as it runs", async () => {
 
 test("README: choosing a shell, and the chainable shorthands", async () => {
   const actual = {
-    namedShell: (await sh({ shell: "/bin/dash" })`echo $0`).output.trim(),
-    defaultShell: (await sh({ shell: "/bin/sh" })`echo $0`).output.trim(),
+    // The README names `/bin/dash` and `zsh` to show that a string names a
+    // shell. Which shells a host has installed is not this library's
+    // promise, so the claim is checked against one every POSIX system has,
+    // and against one no system has.
+    namedShell: (await sh({ shell: "/bin/sh" })`echo $0`).output.trim(),
+    unnamedShellFailsLoudly: await sh
+      .safe({ shell: "/nonexistent/shell" })`echo hi`
+      .then((result) => result.error.code),
     safeLive: (await sh.safe.live`true`).ok,
     syncSafe: cmd.sync.safe`which node`.ok,
     inputShorthand: (await sh.input("hello there")`wc -w`).output.trim(),
@@ -331,8 +350,8 @@ test("README: choosing a shell, and the chainable shorthands", async () => {
       .then(() => "did not throw", (error) => error.name),
   };
   const expected = {
-    namedShell: "/bin/dash",
-    defaultShell: "/bin/sh",
+    namedShell: "/bin/sh",
+    unnamedShellFailsLoudly: "ENOENT",
     safeLive: true,
     syncSafe: true,
     inputShorthand: "2",
