@@ -1881,20 +1881,26 @@ test("stop escalates when the process ignores the polite request", async () => {
 
 test("kill terminates immediately", async () => {
   const { Process } = await import("./index.js");
-  const proc = new Process("sleep 30");
-  
+  const proc = new Process("sleep 30", { throw: false });
+
   await proc.kill();
-  
-  await assert.rejects(async () => { await proc; });
+
+  const { error } = await proc;
+  const actual = { name: error.name, signal: error.signal };
+  const expected = { name: "ProcessError", signal: "SIGKILL" };
+  assert.deepEqual(actual, expected);
 });
 
 test("interrupt delivers the Ctrl-C equivalent", async () => {
   const { Process } = await import("./index.js");
-  const proc = new Process("sleep 30");
-  
+  const proc = new Process("sleep 30", { throw: false });
+
   await proc.interrupt();
-  
-  await assert.rejects(async () => { await proc; });
+
+  const { error } = await proc;
+  const actual = { name: error.name, signal: error.signal };
+  const expected = { name: "ProcessError", signal: "SIGINT" };
+  assert.deepEqual(actual, expected);
 });
 
 test("stopping an already-exited process is a no-op", async () => {
@@ -1910,39 +1916,42 @@ test("stopping an already-exited process is a no-op", async () => {
 
 test("timeout stops the process and reports timedOut", async () => {
   const { sh } = await import("./index.js");
-  
-  await assert.rejects(
-    async () => { await sh({ timeout: "200ms" })`sleep 30`; },
-    (error) => {
-      assert.equal(error.name, "ProcessError");
-      assert.equal(error.timedOut, true);
-      return true;
-    },
-  );
+
+  const error = await sh({ timeout: "200ms" })`sleep 30`
+    .then(() => null, (rejection) => rejection);
+
+  const actual = {
+    rejected: error !== null,
+    name: error?.name,
+    timedOut: error?.timedOut,
+  };
+  const expected = { rejected: true, name: "ProcessError", timedOut: true };
+  assert.deepEqual(actual, expected);
 });
 
 test("a timed-out process keeps the output captured before the stop",
   async () => {
     const { sh } = await import("./index.js");
-    
-    await assert.rejects(
-      async () => {
-        await sh({ timeout: "400ms" })`echo before; sleep 30`;
-      },
-      (error) => {
-        assert.match(error.output, /before/);
-        return true;
-      },
-    );
+
+    const error = await sh({ timeout: "400ms" })`echo before; sleep 30`
+      .then(() => null, (rejection) => rejection);
+
+    const actual = {
+      rejected: error !== null,
+      output: error?.output?.trim(),
+    };
+    const expected = { rejected: true, output: "before" };
+    assert.deepEqual(actual, expected);
   });
 
 test("safe mode resolves a timeout instead of rejecting", async () => {
   const { sh } = await import("./index.js");
-  
+
   const result = await sh.safe({ timeout: "200ms" })`sleep 30`;
-  
-  assert.equal(result.ok, false);
-  assert.equal(result.error.timedOut, true);
+
+  const actual = { ok: result.ok, timedOut: result.error.timedOut };
+  const expected = { ok: false, timedOut: true };
+  assert.deepEqual(actual, expected);
 });
 
 test("the timeout clock starts when the process starts", async () => {
@@ -1963,27 +1972,34 @@ test("the timeout clock starts when the process starts", async () => {
 
 test("durations accept milliseconds or a unit string", async () => {
   const { Process } = await import("./index.js");
-  
-  assert.doesNotThrow(() => new Process("true", {
-    immediate: false, timeout: 1000,
-  }));
-  assert.doesNotThrow(() => new Process("true", {
-    immediate: false, timeout: "1s",
-  }));
-  assert.doesNotThrow(() => new Process("true", {
-    immediate: false, timeout: "0.5s",
-  }));
-});
+  const accepted = (timeout) => {
+    const error = errorFrom(
+      () => new Process("true", { immediate: false, timeout }));
+    return error === null ? "accepted" : error.constructor.name;
+  };
 
-test("a unitless duration string is rejected when config is built",
-  async () => {
-    const { Process } = await import("./index.js");
-    
-    assert.throws(
-      () => new Process("true", { immediate: false, timeout: "30" }),
-      TypeError,
-    );
-  });
+  const actual = {
+    milliseconds: accepted(1000),
+    seconds: accepted("1s"),
+    fractionalSeconds: accepted("0.5s"),
+    minutes: accepted("5m"),
+    hours: accepted("1.5h"),
+    // A string without a unit is an error rather than a guess: "30" could
+    // as easily mean thirty seconds as thirty milliseconds.
+    unitless: accepted("30"),
+    notADuration: accepted("soon"),
+  };
+  const expected = {
+    milliseconds: "accepted",
+    seconds: "accepted",
+    fractionalSeconds: "accepted",
+    minutes: "accepted",
+    hours: "accepted",
+    unitless: "TypeError",
+    notADuration: "TypeError",
+  };
+  assert.deepEqual(actual, expected);
+});
 
 // --- colour ----------------------------------------------------------------
 
@@ -3413,6 +3429,78 @@ test("writing to an input port with nothing connected fails where it was written
   await started;
 });
 
+test("a destination that cannot keep up slows the command down", async () => {
+  // Without this the forwarding loop kept reading and queueing, so a slow
+  // log file or socket turned a noisy command into unbounded memory growth
+  // here, and the command "finished" with its output still in a buffer.
+  // Measured by how much is queued at the high-water mark, which is what a
+  // shell pipe bounds and what was unbounded.
+  const { Writable } = await import("node:stream");
+  let peakQueued = 0;
+  const slow = new Writable({
+    highWaterMark: 64 * 1024,
+    write(chunk, encoding, callback) {
+      peakQueued = Math.max(peakQueued, slow.writableLength);
+      // Slow enough that a fast producer would outrun it.
+      setTimeout(callback, 5);
+    },
+  });
+
+  const megabytes = 8;
+  await sh({ output: slow })
+    `${markSafeString(`dd if=/dev/zero bs=1048576 count=${megabytes} 2>/dev/null`)}`;
+
+  const produced = megabytes * 1024 * 1024;
+  const actual = {
+    stayedNearTheWatermark: peakQueued < produced / 4,
+    didNotQueueEverything: peakQueued < produced,
+  };
+  const expected = {
+    stayedNearTheWatermark: true,
+    didNotQueueEverything: true,
+  };
+  assert.deepEqual(actual, expected, `peak queued ${peakQueued} of ${produced}`);
+});
+
+test("sync does not collect a port that nothing is connected to", async () => {
+  // A blocking call cannot stream, so every byte it collects is held until
+  // the call returns. Asking the kernel for output that is about to be
+  // discarded meant a noisy command could hold hundreds of megabytes to
+  // throw them away. Measured by peak resident memory of a child process,
+  // because the cost is memory rather than a value any assertion can read.
+  const script = (settings) =>
+    `const { sh } = await import(${JSON.stringify(join(__dirname, "index.js"))});\n` +
+    `sh.sync(${settings})\`dd if=/dev/zero bs=1048576 count=200 2>/dev/null\`;\n` +
+    `process.stdout.write(String(process.memoryUsage().rss));\n`;
+
+  const peakRssOf = async (settings) => {
+    const path = `/tmp/sh-cmd-tag-syncbuf-${process.pid}-${settings.length}.mjs`;
+    writeFileSync(path, script(settings));
+    try {
+      const out = await new Promise((resolve, reject) => {
+        const child = spawn("node", [path], { stdio: ["ignore", "pipe", "ignore"] });
+        let seen = "";
+        child.stdout.on("data", (chunk) => { seen += chunk; });
+        child.on("close", () => resolve(seen));
+        child.on("error", reject);
+      });
+      return Number(out.trim());
+    } finally {
+      try { unlinkSync(path); } catch {}
+    }
+  };
+
+  const discarded = await peakRssOf(`{ output: false, debug: false }`);
+  const kept = await peakRssOf(`{ output: true, debug: false }`);
+
+  const actual = {
+    // 200MB of output, so keeping it must cost far more than discarding it.
+    discardingIsCheap: discarded < kept / 2,
+  };
+  const expected = { discardingIsCheap: true };
+  assert.deepEqual(actual, expected, `discarded ${discarded} vs kept ${kept}`);
+});
+
 // --- head and tail: the two bounded writables worth shipping --------------
 
 /**
@@ -3640,6 +3728,60 @@ test("a command is ended when the program that started it ends", async () => {
     const expected = {
       interrupt: "ended", terminate: "ended", hangup: "ended",
     };
+    assert.deepEqual(actual, expected);
+  } finally {
+    try { unlinkSync(script); } catch {}
+  }
+});
+
+test("a program that handles the signal itself keeps its commands", async () => {
+  // The promise is that a command does not outlive the program that started
+  // it — and a program still running has not ended. A server traps SIGTERM
+  // precisely so it can drain in its own order, and its commands are
+  // usually what it needs to drain; ending them on the signal took that
+  // away before the first line of its handler ran.
+  const { writeFileSync, unlinkSync } = await import("node:fs");
+  const script = `/tmp/sh-cmd-tag-handled-${process.pid}.mjs`;
+  const here = new URL("./index.js", import.meta.url).pathname;
+  writeFileSync(
+    script,
+    `const { sh } = await import(${JSON.stringify(here)});\n` +
+    "const p = sh`sleep 519 & echo $!; wait`;\n" +
+    "p.output.on('data', (c) => {\n" +
+    "  const pid = String(c).trim().split('\\n')[0];\n" +
+    "  if (/^\\d+$/.test(pid)) process.stderr.write(pid + '\\n');\n" +
+    "});\n" +
+    // The host's own handler: it keeps running, as a draining server does.
+    "process.on('SIGTERM', () => { process.stderr.write('handled\\n'); });\n" +
+    "setInterval(() => {}, 1000);\n",
+  );
+
+  const alive = (pid) => {
+    try { process.kill(pid, 0); return true; } catch { return false; }
+  };
+
+  try {
+    const child = spawn("node", [script], {
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    let seen = "";
+    child.stderr.on("data", (chunk) => { seen += chunk; });
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    const grandchild = Number(seen.trim().split("\n")[0]);
+
+    child.kill("SIGTERM");
+    await new Promise((resolve) => setTimeout(resolve, 400));
+
+    const actual = {
+      hostHandledIt: seen.includes("handled"),
+      commandSurvived: alive(grandchild),
+    };
+    // And the host's own exit still reaches the command.
+    child.kill("SIGKILL");
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    if (alive(grandchild)) { try { process.kill(grandchild, "SIGKILL"); } catch {} }
+
+    const expected = { hostHandledIt: true, commandSurvived: true };
     assert.deepEqual(actual, expected);
   } finally {
     try { unlinkSync(script); } catch {}

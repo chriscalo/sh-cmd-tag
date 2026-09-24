@@ -210,12 +210,23 @@ function executeSyncCommand(cmd, args, spawnOptions, inputData, options) {
       ...spawnOptions,
       input: inputData,
       encoding: "utf8",
+      // A port with nothing connected is not collected at all. A blocking
+      // call cannot stream, so every byte it collects is held until the
+      // call returns — and asking the kernel for output that is about to
+      // be discarded meant `sh.sync({ output: false })` on a noisy command
+      // could hold hundreds of megabytes to throw them away. Handing that
+      // descriptor to `ignore` is the same answer the asynchronous path
+      // gives: absence means absence, and the bytes never exist here.
+      stdio: [
+        "pipe",
+        isCollected(out) ? "pipe" : "ignore",
+        isCollected(err) ? "pipe" : "ignore",
+      ],
       // spawnSync defaults to a 1MB buffer and kills the child with ENOBUFS
       // on the byte after it, so `sh.sync`cat big.txt`` failed on any output
-      // past a megabyte — whatever `capture` said, including the default.
-      // The ceiling is what a string can hold, which is the same net the
-      // asynchronous path uses; `capture` then decides what the result
-      // keeps, and can only be honoured if the bytes arrived at all.
+      // past a megabyte. The ceiling for a port that *is* collected is what
+      // a string can hold, which is the same net the asynchronous path
+      // uses.
       maxBuffer: MAX_CAPTURE_BYTES,
       ...(timeout !== undefined && timeout !== Infinity
         ? { timeout, killSignal: "SIGKILL" }
@@ -420,14 +431,52 @@ function oneLine(strings, ...values) {
 
 // Convert array to space-separated arguments
 function arrayToShellArgs(arr) {
-  return arr
-    .filter(hasValue)
-    .map(item => shellEscape(String(item)))
+  return checkedArgumentList(arr)
+    .map((item) => shellEscape(String(item)))
     .join(" ");
+}
+
+/**
+ * An array is a list of positional arguments, so every element has to be one.
+ *
+ * A `null` or `undefined` in the list is a hole the caller did not mean to
+ * leave, and no reading of it is better than a guess. `sh` dropped them and
+ * `cmd` sent the strings `"null"` and `"undefined"` as arguments, so one
+ * array produced two different commands depending on which tag ran it — in
+ * the library whose whole promise is that a value cannot cross an argument
+ * boundary. Dropping shifts every later argument; sending the word is the
+ * silent corruption that promise exists to prevent. Neither is defensible,
+ * so it is refused where it was written.
+ *
+ * `undefined` on an *object* is a different thing and keeps its meaning: a
+ * flag that was not set is absent, and absence there is an answer rather
+ * than a hole.
+ */
+function checkedArgumentList(arr) {
+  const hole = arr.findIndex((item) => item === null || item === undefined);
+  if (hole !== -1) {
+    throw new TypeError(
+      `Element ${hole} of an interpolated array is ${String(arr[hole])}, ` +
+      `which is not an argument. Leave it out of the array, or use an ` +
+      `object, where a key that is not set means the flag is absent.`
+    );
+  }
+  return arr;
 }
 
 function hasValue(item) {
   return item !== null && item !== undefined;
+}
+
+/**
+ * Removes empty entries before the command name, keeping every one after it.
+ *
+ * Only the leading ones can be parsing debris; once a command name has been
+ * seen, an empty entry is an argument somebody wrote.
+ */
+function dropLeadingEmpties(argv) {
+  const start = argv.findIndex((part) => part !== "");
+  return start === -1 ? [] : argv.slice(start);
 }
 
 // Core execution function
@@ -575,7 +624,9 @@ function buildCommandArgs(strings, values) {
     if (Array.isArray(value)) {
       // Each element is its own argument, so they are separated here
       // rather than left to the parser.
-      templated += value.map((item) => ` ${hold(item)} `).join("");
+      templated += checkedArgumentList(value)
+        .map((item) => ` ${hold(item)} `)
+        .join("");
     } else if (isSafeString(value)) {
       templated += hold(value);
     } else if (value && typeof value === "object") {
@@ -599,8 +650,15 @@ function buildCommandArgs(strings, values) {
 
 function runCommand(command, useShell, isSync, options) {
   // `cmd` arrives as an argument list; `sh` as a string to hand a shell.
+  //
+  // Empty entries are dropped from the front, where they are the debris of
+  // parsing a template that began with whitespace, and kept everywhere
+  // else, where they are an argument the caller asked for. `grep "" file`
+  // and `--name=` are ordinary, and dropping them silently turned a
+  // deliberate empty argument into a missing one — which is the argument
+  // boundary moving, the one thing this library promises cannot happen.
   const isArgv = Array.isArray(command);
-  command = isArgv ? command.filter((part) => part !== "") : command.trim();
+  command = isArgv ? dropLeadingEmpties(command) : command.trim();
 
   // Handle empty commands
   if (isArgv ? command.length === 0 : !command) {
@@ -1256,6 +1314,16 @@ function isWritable(value) {
 }
 
 /**
+ * Whether anything is waiting for a port's bytes.
+ *
+ * Nothing kept and nowhere to send them means the bytes have no destination
+ * at all, so there is no reason to collect them.
+ */
+function isCollected(port) {
+  return port.keep || port.streams.length > 0;
+}
+
+/**
  * Whether a port gets the real file descriptor or a pipe.
  *
  * The real one when the parent's own stream is the port's only connection,
@@ -1356,14 +1424,19 @@ function installExitHooks() {
 
   for (const signal of SIGNALS_THAT_END_US) {
     process.on(signal, () => {
-      endLiveGroups();
-      // Only take over the exit when nothing else is listening. A caller
-      // with their own handler has their own intentions, and ending the
-      // program on their behalf would override them.
-      if (process.listenerCount(signal) === 1) {
-        process.removeAllListeners(signal);
-        process.kill(process.pid, signal);
+      // A caller with their own handler for this signal is not necessarily
+      // ending — a server traps SIGTERM precisely so it can drain in its
+      // own order, and its commands are usually what it needs to drain.
+      // Ending them here took that away before the first line of their
+      // handler ran, which is the opposite of the promise: commands do not
+      // outlive the program, and a program that is still running has not
+      // ended. Its own exit still reaches them through the `exit` hook.
+      if (process.listenerCount(signal) > 1) {
+        return;
       }
+      endLiveGroups();
+      process.removeAllListeners(signal);
+      process.kill(process.pid, signal);
     });
   }
 }
@@ -1599,18 +1672,10 @@ class Process {
     this.#keepDebug = err.keep;
 
     if (child.stdout) {
-      child.stdout.pipe(this.#io.output);
-      child.stdout.on("data", (chunk) => {
-        if (out.keep) this.#capture(this.#outputChunks, chunk, "output");
-        for (const stream of out.streams) stream.write(chunk);
-      });
+      this.#forward(child.stdout, out, this.#outputChunks, "output");
     }
     if (child.stderr) {
-      child.stderr.pipe(this.#io.debug);
-      child.stderr.on("data", (chunk) => {
-        if (err.keep) this.#capture(this.#debugChunks, chunk, "debug");
-        for (const stream of err.streams) stream.write(chunk);
-      });
+      this.#forward(child.stderr, err, this.#debugChunks, "debug");
     }
     if (child.stdin) {
       // A command is free to exit without reading its input — `yes | head`
@@ -1639,6 +1704,62 @@ class Process {
     }
   }
   
+  /**
+   * Sends one of the child's streams to everything connected to its port.
+   *
+   * A destination that cannot keep up has to slow the child down, the way a
+   * shell pipe does. `write()` returning `false` was ignored here, so the
+   * loop kept reading and queueing: a slow log file or a socket turned a
+   * noisy command into unbounded memory growth in this process, and the
+   * command "finished" with all of its output still sitting in a buffer.
+   *
+   * Pausing the child's stream is the whole mechanism — it stops reading,
+   * the kernel pipe fills, and the child blocks on its own `write`, which
+   * is exactly what happens when it is piped to a slow program by a shell.
+   *
+   * The exposed handle is written to here rather than piped to, because
+   * `pipe()` resumes its source whenever the destination drains. With the
+   * handle piped, every pause taken below was undone on the next tick by a
+   * stream nobody was even reading, and the backpressure above was a
+   * no-op. One reader of the child's stream means one authority over when
+   * it flows.
+   */
+  #forward(source, port, chunks, which) {
+    const stalled = new Set();
+    const handle = which === "output" ? this.#io.output : this.#io.debug;
+    const destinations = [handle, ...port.streams];
+
+    source.on("end", () => handle.end());
+
+    source.on("data", (chunk) => {
+      if (port.keep) {
+        this.#capture(chunks, chunk, which);
+      }
+      for (const stream of destinations) {
+        if (stream.write(chunk) !== false || stalled.has(stream)) {
+          continue;
+        }
+        stalled.add(stream);
+        source.pause();
+
+        // A destination that dies never drains, and waiting on it would
+        // stall the command for good — so its end releases the hold too.
+        const release = () => {
+          stream.off("drain", release);
+          stream.off("error", release);
+          stream.off("close", release);
+          stalled.delete(stream);
+          if (stalled.size === 0 && !source.destroyed) {
+            source.resume();
+          }
+        };
+        stream.on("drain", release);
+        stream.on("error", release);
+        stream.on("close", release);
+      }
+    });
+  }
+
   #drainIfUnobserved() {
     // Capture happens on the child's own streams, so the exposed ones exist
     // purely for a caller who wants to watch. If nobody does, they must not
