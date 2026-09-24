@@ -2039,24 +2039,6 @@ test("a unitless duration string is rejected when config is built",
 
 // --- colour ----------------------------------------------------------------
 
-test("color true sets FORCE_COLOR in the child", async () => {
-  const { sh } = await import("./index.js");
-  
-  const actual = (await sh({ color: true })`echo "$FORCE_COLOR|$NO_COLOR"`)
-    .output.trim();
-  const expected = "1|";
-  assert.equal(actual, expected);
-});
-
-test("color false sets NO_COLOR in the child", async () => {
-  const { sh } = await import("./index.js");
-  
-  const actual = (await sh({ color: false })`echo "$FORCE_COLOR|$NO_COLOR"`)
-    .output.trim();
-  const expected = "|1";
-  assert.equal(actual, expected);
-});
-
 test("color unset adds neither variable", async () => {
   const { sh } = await import("./index.js");
   // The parent's own variables are inherited by design, so they have to be
@@ -2478,38 +2460,6 @@ test("env can override the colour variables when color is unset", async () => {
     .output.trim();
   const expected = "3";
   assert.equal(actual, expected);
-});
-
-test("color true clears an inherited NO_COLOR", async () => {
-  const { sh } = await import("./index.js");
-  const previous = process.env.NO_COLOR;
-  process.env.NO_COLOR = "1";
-  
-  try {
-    const actual =
-      (await sh({ color: true })`echo "$FORCE_COLOR|$NO_COLOR"`).output.trim();
-    const expected = "1|";
-    assert.equal(actual, expected);
-  } finally {
-    if (previous === undefined) delete process.env.NO_COLOR;
-    else process.env.NO_COLOR = previous;
-  }
-});
-
-test("color false clears an inherited FORCE_COLOR", async () => {
-  const { sh } = await import("./index.js");
-  const previous = process.env.FORCE_COLOR;
-  process.env.FORCE_COLOR = "1";
-  
-  try {
-    const actual =
-      (await sh({ color: false })`echo "$FORCE_COLOR|$NO_COLOR"`).output.trim();
-    const expected = "|1";
-    assert.equal(actual, expected);
-  } finally {
-    if (previous === undefined) delete process.env.FORCE_COLOR;
-    else process.env.FORCE_COLOR = previous;
-  }
 });
 
 // --- findings from automated review ----------------------------------------
@@ -3501,14 +3451,22 @@ test("a synchronous command is not cut off at one megabyte", async () => {
 
 test("an identity escape keeps its backslash", async () => {
   // Cooked template strings have already had their escapes processed by
-  // JavaScript, so `\d` arrived at the shell as `d` and grep searched for
-  // a letter — a wrong answer, with no error at all. Raw keeps the
-  // backslash, because it belongs to the command.
+  // JavaScript, so `\d` reached the shell as `d` — a wrong command, with
+  // no error at all. Raw keeps the backslash, because it belongs to the
+  // command rather than to JavaScript.
+  //
+  // `printf %s` does not interpret backslashes in its argument, on any
+  // shell, so this shows the two characters arriving intact without
+  // depending on a regex dialect. An earlier version of this test used
+  // `grep '\d'`, which matches a digit on BSD grep and means a literal
+  // `d` under GNU grep, so it passed on macOS and failed on Linux — it was
+  // asserting a grep dialect rather than the fix.
   const actual = {
-    digit: (await sh.safe`printf 'a1\n' | grep '\d'`).output,
-    space: (await sh.safe`printf 'a b\n' | grep '\s'`).output,
+    digit: (await sh`printf '%s' '\d'`).output,
+    space: (await sh`printf '%s' '\s'`).output,
+    both: (await cmd`printf '%s' '\w+'`).output,
   };
-  const expected = { digit: "a1\n", space: "a b\n" };
+  const expected = { digit: "\\d", space: "\\s", both: "\\w+" };
   assert.deepEqual(actual, expected);
 });
 
@@ -3610,4 +3568,66 @@ test("a value cannot smuggle in an argument boundary", async () => {
     .filter(Boolean);
   const expected = ["a 0 b"];
   assert.deepEqual(actual, expected);
+});
+
+// --- env is the environment, not an addition to it ------------------------
+
+test("env replaces the environment rather than extending it", async () => {
+  // Node's child_process and Python's subprocess both replace. Merging on
+  // the caller's behalf would be the library doing something unasked, and
+  // would leave a clean environment unsayable without another option.
+  // Asserted against a variable this test controls rather than PATH,
+  // because bash substitutes a compiled-in default PATH when none is
+  // inherited, so an empty PATH never appears even under replacement.
+  const previous = process.env.SH_CMD_TAG_INHERITED;
+  process.env.SH_CMD_TAG_INHERITED = "from the parent";
+  try {
+    const actual = {
+      replaced: (await sh({ env: { ONLY: "this" } })
+        `printf '%s' "$ONLY|$SH_CMD_TAG_INHERITED"`).output,
+      extended: (await sh({ env: { ...process.env, EXTRA: "added" } })
+        `printf '%s' "$EXTRA|$SH_CMD_TAG_INHERITED"`).output,
+    };
+    const expected = {
+      replaced: "this|",
+      extended: "added|from the parent",
+    };
+    assert.deepEqual(actual, expected);
+  } finally {
+    if (previous === undefined) delete process.env.SH_CMD_TAG_INHERITED;
+    else process.env.SH_CMD_TAG_INHERITED = previous;
+  }
+});
+
+test("sync and async agree about env", async () => {
+  // sync passed process.env outright, so it ignored the option entirely
+  // and ran the command in the wrong environment with no error.
+  const actual = {
+    async: (await sh({ env: { WHO: "async" } })`printf '%s' "$WHO"`).output,
+    sync: sh.sync({ env: { WHO: "sync" } })`printf '%s' "$WHO"`.output,
+    asyncCmd: (await cmd({ env: { WHO: "acmd" } })`printenv WHO`).output.trim(),
+    syncCmd: cmd.sync({ env: { WHO: "scmd" } })`printenv WHO`.output.trim(),
+  };
+  const expected = {
+    async: "async", sync: "sync", asyncCmd: "acmd", syncCmd: "scmd",
+  };
+  assert.deepEqual(actual, expected);
+});
+
+test("omitting env inherits the caller's environment", async () => {
+  // Replacing is what `env` means when given; saying nothing still means
+  // "whatever I have", which is also what child_process does.
+  const previous = process.env.SH_CMD_TAG_PROBE;
+  process.env.SH_CMD_TAG_PROBE = "inherited";
+  try {
+    const actual = {
+      async: (await sh`printf '%s' "$SH_CMD_TAG_PROBE"`).output,
+      sync: sh.sync`printf '%s' "$SH_CMD_TAG_PROBE"`.output,
+    };
+    const expected = { async: "inherited", sync: "inherited" };
+    assert.deepEqual(actual, expected);
+  } finally {
+    if (previous === undefined) delete process.env.SH_CMD_TAG_PROBE;
+    else process.env.SH_CMD_TAG_PROBE = previous;
+  }
 });

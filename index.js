@@ -577,7 +577,9 @@ function runCommand(command, useShell, isSync, options) {
   // Always use pipe to capture output, even in interactive mode
   const spawnOptions = {
     stdio: ["pipe", "pipe", "pipe"],
-    env: process.env,
+    // The same environment the asynchronous path builds. This was
+    // `process.env` outright, so `sync` ignored `env` altogether.
+    env: buildEnvironment(options),
     cwd: workingDir,
   };
   
@@ -898,21 +900,27 @@ function toMilliseconds(value, key) {
  * implementation-dependent, so setting both would make behaviour depend on
  * which tool the caller happened to run.
  */
+/**
+ * The environment the child runs in.
+ *
+ * `env` is the environment, not an addition to it — the same meaning Node's
+ * `child_process` and Python's `subprocess` give it. Extending is explicit
+ * and visible at the call site:
+ *
+ *     sh({ env: { ...process.env, FOO: "bar" } })`echo $FOO`
+ *
+ * Merging on the caller's behalf would be the library doing something
+ * unasked, and it would leave a clean environment unsayable without another
+ * option. Forgetting the spread fails loudly — the child gets no PATH and
+ * reports `command not found` — rather than quietly running somewhere
+ * unexpected.
+ *
+ * Nothing here manipulates FORCE_COLOR or NO_COLOR. A child decides colour
+ * by asking whether its output is a terminal, so colour appears wherever
+ * one is involved and not otherwise.
+ */
 function buildEnvironment(config) {
-  const env = { ...process.env, ...config.env };
-  
-  // `color` decides only when it is set. Left unset, the child inherits
-  // whatever the caller's environment and `env` say, which may be neither,
-  // either, or — not our doing — both.
-  if (config.color === true) {
-    delete env.NO_COLOR;
-    env.FORCE_COLOR = "1";
-  } else if (config.color === false) {
-    delete env.FORCE_COLOR;
-    env.NO_COLOR = "1";
-  }
-  
-  return env;
+  return config.env === undefined ? process.env : { ...config.env };
 }
 
 /**
