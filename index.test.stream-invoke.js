@@ -16,7 +16,14 @@ try {
   process.exit(1);
 }
 
-// TODO: turn this into an object with .on() and .off() methods
+/**
+ * Runs `callback` with `process.stdout` and `process.stderr` replaced by
+ * interceptors that stamp each line with the latency since it was emitted.
+ *
+ * The override is a proxy around `globalThis.process` rather than a patched
+ * method, so the swap is undone by restoring one reference and cannot leak
+ * into another test.
+ */
 async function withStdioOverrides(callback) {
   const originalProcess = global.process;
   const stdoutWrite = bindMethod(process.stdout, "write");
