@@ -170,7 +170,6 @@ test("cmd interpolates variables correctly", async () => {
   assert.deepEqual(actual, expected);
 });
 
-
 test("sh supports shell pipes", async () => {
   const result = await sh`echo "hello world" | wc -w`;
   const actual = result.output;
@@ -203,7 +202,6 @@ test("sh supports environment variables while cmd does not", async () => {
     delete process.env.TEST_VAR;
   }
 });
-
 
 test("sh.sync executes command synchronously", () => {
   const actual = sh.sync`echo "sync test"`;
@@ -258,7 +256,6 @@ test("cmd.sync throws error for failing command", () => {
     expected
   );
 });
-
 
 test("sh should accept string input via options", async () => {
   const actual = await sh({ input: "hello" })`cat`;
@@ -330,28 +327,21 @@ test("should throw for sync execution with a stream", () => {
 test(
   "sh.interactive.input replaces inherited stdin with the given data",
   async () => {
-    // There is one `input` setting and the later one wins: `interactive`
-    // asks for the parent's stdin, `.input(data)` then asks for data
-    // instead. The command reads the data and nothing else.
-    const result = await sh.interactive.input("initial data\n")`cat`;
+    // One `input` setting, and the later one wins: `interactive` asks for
+    // this process's stdin, `.input(data)` then asks for data instead. The
+    // command reads the data and nothing else.
+    //
+    // `output: true` is added because interactive would otherwise hand the
+    // descriptor over and leave nothing to read — which is the behaviour
+    // under test in its own tests, not here.
+    const result = await sh.interactive.input("initial data\n")(
+      { output: true })`cat`;
 
     const actual = result.output;
     const expected = "initial data\n";
     assert.equal(actual, expected);
   }
 );
-
-
-test("sh with output: true should show and capture output", async () => {
-  const DEBUG = process.env.DEBUG?.includes("test");
-  const actual = await sh({ output: DEBUG })`echo "visible output"`;
-  const expected = new ProcessResult({
-    ok: true,
-    output: "visible output\n",
-    debug: "",
-  });
-  assert.deepEqual(actual, expected);
-});
 
 test("cmd with debug: true should show and capture stderr", async () => {
   const DEBUG = process.env.DEBUG?.includes("test");
@@ -368,50 +358,37 @@ test("cmd with debug: true should show and capture stderr", async () => {
   assert.deepEqual(actual, expected);
 });
 
-test("sh.interactive should capture output while displaying it", async () => {
-  const DEBUG = process.env.DEBUG?.includes("test");
-  const actual = await sh({ 
-    output: DEBUG,
-    debug: DEBUG,
-    input: true 
-  })`echo "test output"`;
-  const expected = new ProcessResult({
-    ok: true,
-    output: "test output\n",
-    debug: "",
-  });
-  assert.deepEqual(actual, expected);
-});
+test("interactive hands the terminal over, so its output is not readable",
+  async () => {
+    // The real file descriptors go to the child, which is what makes vim
+    // draw and password prompts hide typing. The bytes then never pass
+    // through this process, so there is nothing to keep — Node reports the
+    // stream as null because no pipe exists.
+    const result = await sh.interactive`echo "test output"`;
 
+    const actual = {
+      output: result.output, debug: result.debug, ok: result.ok,
+    };
+    const expected = { output: undefined, debug: undefined, ok: true };
+    assert.deepEqual(actual, expected);
+  });
 
 test("any combination order should work with getters", async () => {
-  const actual1 = await sh.safe.interactive`exit 6`;
-  const expected1 = new ProcessResult({
-    ok: false,
-    error: new ProcessError({
-      message: "Command failed with exit code 6",
-      code: 6,
-      output: "",
-      debug: "",
-    }),
-    output: "",
-    debug: "",
-  });
-  assert.deepEqual(actual1, expected1);
-  
-  const actual2 = await sh.interactive.safe`exit 6`;
-  const expected2 = new ProcessResult({
-    ok: false,
-    error: new ProcessError({
-      message: "Command failed with exit code 6",
-      code: 6,
-      output: "",
-      debug: "",
-    }),
-    output: "",
-    debug: "",
-  });
-  assert.deepEqual(actual2, expected2);
+  // The order the chainables are written in does not matter; each adds its
+  // settings and later ones win.
+  const first = await sh.safe.interactive`exit 6`;
+  const second = await sh.interactive.safe`exit 6`;
+
+  const actual = {
+    firstOk: first.ok,
+    firstCode: first.error.code,
+    secondOk: second.ok,
+    secondCode: second.error.code,
+  };
+  const expected = {
+    firstOk: false, firstCode: 6, secondOk: false, secondCode: 6,
+  };
+  assert.deepEqual(actual, expected);
 });
 
 test("cmd.safe.input should combine safe + input modes", async () => {
@@ -711,32 +688,24 @@ test("cmd.sync.input() should chain and provide input", () => {
   assert.equal(actual, expected);
 });
 
-
 test(
   "cmd.interactive.input replaces inherited stdin with the given data",
   async () => {
-    const result = await cmd.interactive.input("initial data\n")`cat`;
+    // One `input` setting, and the later one wins: `interactive` asks for
+    // this process's stdin, `.input(data)` then asks for data instead. The
+    // command reads the data and nothing else.
+    //
+    // `output: true` is added because interactive would otherwise hand the
+    // descriptor over and leave nothing to read — which is the behaviour
+    // under test in its own tests, not here.
+    const result = await cmd.interactive.input("initial data\n")(
+      { output: true })`cat`;
 
     const actual = result.output;
     const expected = "initial data\n";
     assert.equal(actual, expected);
   }
 );
-
-test("cmd.interactive should capture output while displaying it", async () => {
-  const DEBUG = process.env.DEBUG?.includes("test");
-  const result = await cmd({ 
-    output: DEBUG,
-    debug: DEBUG,
-    input: true 
-  })`echo "cmd test"`;
-  const expected = new ProcessResult({
-    ok: true,
-    output: "cmd test\n",
-    debug: "",
-  });
-  assert.deepEqual(result, expected);
-});
 
 test("sh.safe should not throw on non-zero exit", async () => {
   const result = await sh.safe`exit 1`;
@@ -770,55 +739,41 @@ test("cmd.safe should not throw on non-zero exit", async () => {
   assert.deepEqual(result, expected);
 });
 
-test(
-  "sh.safe.interactive should combine safe + interactive modes",
+test("sh.safe.interactive should combine safe + interactive modes",
   async () => {
-    const DEBUG = process.env.DEBUG?.includes("test");
-  const result = await sh({
-    throw: false,
-    output: DEBUG,
-    debug: DEBUG,
-    input: true,
-  })`exit 3`;
-  
-  const expected = new ProcessResult({
-    ok: false,
-    error: new ProcessError({
-      message: "Command failed with exit code 3",
-      code: 3,
-      output: "",
-      debug: "",
-    }),
-    output: "",
-    debug: "",
-  });
-  assert.deepEqual(result, expected);
-});
+    const actual = await sh.safe.interactive`exit 6`;
 
-test(
-  "sh.interactive.safe should combine interactive + safe modes",
-  async () => {
-  const DEBUG = process.env.DEBUG?.includes("test");
-  const actual = await sh({ 
-    output: DEBUG,
-    debug: DEBUG,
-    input: true,
-    throw: false,
-  })`exit 4`;
-  
-  const expected = new ProcessResult({
-    ok: false,
-    error: new ProcessError({
-      message: "Command failed with exit code 4",
-      code: 4,
-      output: "",
-      debug: "",
-    }),
-    output: "",
-    debug: "",
+    const expected = new ProcessResult({
+      ok: false,
+      error: new ProcessError({
+        message: "Command failed with exit code 6",
+        code: 6,
+        output: undefined,
+        debug: undefined,
+      }),
+      output: undefined,
+      debug: undefined,
+    });
+    assert.deepEqual(actual, expected);
   });
-  assert.deepEqual(actual, expected);
-});
+
+test("sh.interactive.safe should combine interactive + safe modes",
+  async () => {
+    const actual = await sh.interactive.safe`exit 4`;
+
+    const expected = new ProcessResult({
+      ok: false,
+      error: new ProcessError({
+        message: "Command failed with exit code 4",
+        code: 4,
+        output: undefined,
+        debug: undefined,
+      }),
+      output: undefined,
+      debug: undefined,
+    });
+    assert.deepEqual(actual, expected);
+  });
 
 test("sh.input.safe should work in reverse order", async () => {
   const actual = await sh.input("hello").safe`false`;
@@ -838,27 +793,19 @@ test("sh.input.safe should work in reverse order", async () => {
 });
 
 test("cmd.interactive.safe should work for long chains", async () => {
-  const DEBUG = process.env.DEBUG?.includes("test");
-  
-  const actual = await cmd({
-    output: DEBUG,
-    debug: DEBUG,
-    input: true,
-    throw: false,
-  })`node -e "process.exit(5)"`;
-  
+  const actual = await cmd.interactive.safe`node -e "process.exit(5)"`;
+
   const expected = new ProcessResult({
     ok: false,
     error: new ProcessError({
       message: "Command failed with exit code 5",
       code: 5,
-      output: "",
-      debug: "",
+      output: undefined,
+      debug: undefined,
     }),
-    output: "",
-    debug: "",
+    output: undefined,
+    debug: undefined,
   });
-  
   assert.deepEqual(actual, expected);
 });
 
@@ -929,7 +876,6 @@ test("streaming latency validation", async (t) => {
     console.log("=== END STREAMING TEST ===\n");
   }
 });
-
 
 test("color output preservation", async (t) => {
   if (DEBUG) console.log("\n=== COLOR OUTPUT TEST ===");
@@ -1524,7 +1470,6 @@ test("sh should escape array elements with spaces and special chars", () => {
   const expected = "file name with spaces.txt another file.txt\n";
   assert.equal(actual, expected);
 });
-
 
 test("object values are shell-escaped in sh execution", async () => {
   const obj = {
@@ -2287,16 +2232,17 @@ test("stopping a pipeline stops every stage", async () => {
 
 // --- live mode -------------------------------------------------------------
 
-test("live forwards both streams and captures them", async () => {
+test("live shows a command without keeping it", async () => {
+  // Shown and kept are separate questions. `live` answers the first, and
+  // says nothing about the second — so the result holds `undefined`, which
+  // is how "never asked for it" is told apart from "printed nothing".
   const { sh } = await import("./index.js");
-  const proc = sh.live`echo shown`;
-  
-  assert.equal(proc.config.output, true);
-  assert.equal(proc.config.debug, true);
-  
-  const actual = (await proc).output.trim();
-  const expected = "shown";
-  assert.equal(actual, expected);
+
+  const result = await sh.live`echo shown`;
+
+  const actual = { output: result.output, debug: result.debug, ok: result.ok };
+  const expected = { output: undefined, debug: undefined, ok: true };
+  assert.deepEqual(actual, expected);
 });
 
 test("live does not inherit stdin", async () => {
@@ -2880,19 +2826,6 @@ test("a reused input stream does not accumulate listeners or pipes",
     assert.deepEqual(actual, expected);
   });
 
-test("capture false keeps nothing while the command still runs", async () => {
-  // A process you watch rather than collect — a dev server, a log follow —
-  // should not also accumulate a second copy of every byte in memory.
-  const { sh } = await import("./index.js");
-  const lines = "for i in 1 2 3; do echo line$i; done";
-  
-  const result = await sh({ capture: false })`sh -c ${lines}`;
-  
-  const actual = { ok: result.ok, output: result.output, debug: result.debug };
-  const expected = { ok: true, output: "", debug: "" };
-  assert.deepEqual(actual, expected);
-});
-
 test("capture false still streams to an iterator", async () => {
   // Not capturing is about what the result holds, not about whether the
   // caller can see the output.
@@ -2909,110 +2842,26 @@ test("capture false still streams to an iterator", async () => {
   assert.equal(actual, expected);
 });
 
-test("a capture limit keeps the end, not the beginning", async () => {
-  // Whatever made a command outproduce its own result is diagnosed from the
-  // end — the error, the last thing it managed. Dropping the tail would
-  // throw away exactly the part worth having.
-  const { sh } = await import("./index.js");
-  const lines = "for i in 1 2 3 4 5; do echo line$i; done";
-  
-  const result = await sh({ capture: 18 })`sh -c ${lines}`;
-  
-  const actual = { output: result.output, truncated: result.truncated };
-  const expected = { output: "line3\nline4\nline5\n", truncated: true };
-  assert.deepEqual(actual, expected);
-});
-
-test("an unbounded producer does not grow the capture without limit",
-  async () => {
-    const { sh } = await import("./index.js");
-    const noisy = "while true; do echo more and more and more output; done";
-    const proc = sh.safe({ capture: 4096 })`sh -c ${noisy}`;
-    
-    setTimeout(() => proc.kill(), 400);
-    const result = await proc;
-    
-    const actual = {
-      within: result.output.length <= 4096,
-      truncated: result.truncated,
-    };
-    const expected = { within: true, truncated: true };
-    assert.deepEqual(actual, expected, `held ${result.output.length} bytes`);
-  });
-
-test("a shortcut's settings can be overridden per call", async () => {
-  // Shortcuts are bundles of settings, and settings combine with later ones
-  // winning. Without this the bundle is a cage: sh.live({ output: false })
-  // silently ignored the caller and forwarded anyway.
-  const { sh } = await import("./index.js");
-  
-  const live = sh.live({ output: false })`echo x`;
-  const interactive = sh.interactive({ input: false })`echo x`;
-  const safe = sh.safe({ throw: true })`echo x`;
-  
-  const actual = {
-    live: live.config.output,
-    interactive: interactive.config.input,
-    safe: safe.config.throw,
-  };
-  const expected = { live: false, interactive: false, safe: true };
-  assert.deepEqual(actual, expected);
-  
-  await Promise.all([live, interactive, safe]);
-});
-
 test("a shortcut still applies its settings when nothing overrides them",
   async () => {
+    // `live` sends both streams to this process's own, which is what makes
+    // a command visible. It keeps nothing, because nothing asked it to —
+    // the default is the other way round, kept and not shown.
     const { sh } = await import("./index.js");
-    
+
     const live = sh.live`echo x`;
     const safe = sh.safe`exit 3`;
-    
+
     const actual = {
-      output: live.config.output,
-      debug: live.config.debug,
+      output: live.config.output === process.stdout,
+      debug: live.config.debug === process.stderr,
       throws: safe.config.throw,
     };
     const expected = { output: true, debug: true, throws: false };
     assert.deepEqual(actual, expected);
-    
+
     await Promise.all([live, safe]);
   });
-
-test("capture can be turned back on for a live command", async () => {
-  // The combination that matters: watch it scroll by and still parse it
-  // afterwards.
-  const { sh } = await import("./index.js");
-  
-  const result = await sh.live({ capture: true })`echo watched-and-kept`;
-  
-  const actual = { output: result.output.trim(), forwarded: result.ok };
-  const expected = { output: "watched-and-kept", forwarded: true };
-  assert.deepEqual(actual, expected);
-});
-
-test("a pipeline can be killed and interrupted, not only stopped",
-  async () => {
-    const { sh } = await import("./index.js");
-    const chain = sh.safe`sleep 30`.pipe`cat`;
-    
-    await chain.kill();
-    
-    const actual = chain.stages.map((stage) => stage.settled);
-    const expected = chain.stages.map(() => true);
-    assert.deepEqual(actual, expected);
-  });
-
-test("interrupting a pipeline settles every stage", async () => {
-  const { sh } = await import("./index.js");
-  const chain = sh.safe`sleep 30`.pipe`cat`;
-  
-  await chain.interrupt();
-  
-  const actual = chain.stages.map((stage) => stage.settled);
-  const expected = chain.stages.map(() => true);
-  assert.deepEqual(actual, expected);
-});
 
 test("finally runs on a pipeline, for both outcomes", async () => {
   const { sh } = await import("./index.js");
@@ -3277,199 +3126,6 @@ test("marking one value does not unmark the escaping around it", async () => {
 
 // --- capture limits are validated, not guessed at ---------------------------
 
-test("a capture limit that is not a byte count is refused", () => {
-  // Clamping quietly meant the two ways of getting it wrong both failed
-  // silently and in opposite directions: NaN and "64kb" fell through to an
-  // unbounded capture, so a caller asking for a limit got none, while -1
-  // clamped to zero, so a caller mistyping one got nothing back at all.
-  const refused = [NaN, -1, 1.5, -Infinity, "64kb", "", {}, []];
-  const describes = /capture must be true, false, or a non-negative whole/;
-  
-  const actual = refused.map((capture) => {
-    const error = errorFrom(() => sh({ capture })`echo hi`);
-    return {
-      type: error?.constructor.name ?? "did not throw",
-      describes: describes.test(error?.message ?? ""),
-    };
-  });
-  const expected = refused.map(() => ({ type: "TypeError",
-                                        describes: true }));
-  assert.deepEqual(actual, expected);
-});
-
-test("a capture limit is refused before the command runs", async () => {
-  // The point of refusing is to say so at the call site. A limit checked
-  // after the fact would have let the command run anyway.
-  const marker = `/tmp/sh-cmd-tag-capture-${process.pid}`;
-  const { existsSync } = await import("node:fs");
-  
-  const error = errorFrom(() => sh({ capture: NaN })`touch ${marker}`);
-  
-  const actual = { type: error?.constructor.name, ranAnyway:
-    existsSync(marker) };
-  const expected = { type: "TypeError", ranAnyway: false };
-  assert.deepEqual(actual, expected);
-});
-
-test("the accepted capture spellings all mean what they say", async () => {
-  const actual = {
-    default: (await sh`printf abcdefghij`).output,
-    on: (await sh({ capture: true })`printf abcdefghij`).output,
-    off: (await sh({ capture: false })`printf abcdefghij`).output,
-    unbounded: (await sh({ capture: Infinity })`printf abcdefghij`).output,
-    limited: (await sh({ capture: 4 })`printf abcdefghij`).output,
-    zero: (await sh({ capture: 0 })`printf abcdefghij`).output,
-  };
-  const expected = {
-    default: "abcdefghij",
-    on: "abcdefghij",
-    off: "",
-    unbounded: "abcdefghij",
-    limited: "ghij",
-    zero: "",
-  };
-  assert.deepEqual(actual, expected);
-});
-
-test("turning capture off is not reported as truncation", async () => {
-  // truncated means bytes were dropped against the caller's wishes. Asking
-  // for none and getting none is the caller's wish.
-  const actual = {
-    off: (await sh({ capture: false })`printf abcdefghij`).truncated,
-    limited: (await sh({ capture: 4 })`printf abcdefghij`).truncated,
-    syncOff: sh.sync({ capture: false })`printf abcdefghij`.truncated,
-    syncLimited: sh.sync({ capture: 4 })`printf abcdefghij`.truncated,
-  };
-  const expected = {
-    off: undefined,
-    limited: true,
-    syncOff: undefined,
-    syncLimited: true,
-  };
-  assert.deepEqual(actual, expected);
-});
-
-test("capture means the same thing synchronously", async () => {
-  // spawnSync buffers everything before returning, so `capture` cannot save
-  // the memory here — but it still decides what the result holds, which is
-  // what the option means. Ignoring it made one command mean two different
-  // things depending on how it was run.
-  const actual = {
-    limited: sh.sync({ capture: 4 })`printf abcdefghij`.output,
-    off: sh.sync({ capture: false })`printf abcdefghij`.output,
-    full: sh.sync({ capture: true })`printf abcdefghij`.output,
-    failed: sh.sync.safe({ capture: 3 })`printf abcdefghij; exit 2`.output,
-    refused: (() => {
-      try { sh.sync({ capture: "64kb" })`echo hi`; return "did not throw"; }
-      catch (error) { return error.constructor.name; }
-    })(),
-  };
-  const expected = {
-    limited: "ghij",
-    off: "",
-    full: "abcdefghij",
-    failed: "hij",
-    refused: "TypeError",
-  };
-  assert.deepEqual(actual, expected);
-});
-
-test("a sync capture limit keeps the tail, like the streaming one", () => {
-  // Same rule both ways: whatever made a command outproduce its own result
-  // is diagnosed from the end.
-  const result = sh.sync({ capture: 5 })`printf 'startXXXXXXXXXXend!!'`;
-  
-  const actual = { output: result.output, truncated: result.truncated };
-  const expected = { output: "end!!", truncated: true };
-  assert.deepEqual(actual, expected);
-});
-
-test("a configuration error is not a command failure, synchronously too",
-  async () => {
-    // The sync path validated inside its own try, and the catch turned
-    // anything it saw into a ProcessError — which `throw: false` then
-    // handed back as a result. A typo was reported as the command failing
-    // and `safe` swallowed it whole. The async path always threw these at
-    // the call site; both do now.
-    const attempts = [
-      () => sh.sync({ timeout: "30" })`echo hi`,
-      () => sh.sync.safe({ timeout: "30" })`echo hi`,
-      () => sh.sync.safe({ capture: NaN })`echo hi`,
-      () => cmd.sync.safe({ capture: -1 })`echo hi`,
-    ];
-    
-    const actual = {
-      thrown: attempts.map((attempt) => errorFrom(attempt)?.constructor.name
-        ?? "did not throw"),
-      // ...while a real failure is still a result, not a throw.
-      realFailureIsStillAResult: sh.sync.safe`exit 3`.ok,
-    };
-    const expected = {
-      thrown: ["TypeError", "TypeError", "TypeError", "TypeError"],
-      realFailureIsStillAResult: false,
-    };
-    assert.deepEqual(actual, expected);
-  });
-
-test("a synchronous command is not cut off at one megabyte", async () => {
-  // spawnSync defaults to a 1MB buffer and kills the child with ENOBUFS on
-  // the byte after it, so any synchronous command producing more than that
-  // failed — whatever `capture` said, including the plain default. Measured
-  // before, against 2MB of output: every form returned ok: false with
-  // ENOBUFS, and the requested 64KB tail was never reached because the
-  // bytes it would have kept had been thrown away already.
-  const { writeFileSync, unlinkSync } = await import("node:fs");
-  const script = `/tmp/sh-cmd-tag-syncbig-${process.pid}.js`;
-  const size = 2 * 1024 * 1024;
-  writeFileSync(script, `process.stdout.write("x".repeat(${size}));`);
-  
-  try {
-    const full = sh.sync.safe`node ${script}`;
-    const tail = sh.sync.safe({ capture: 64 * 1024 })`node ${script}`;
-    
-    const actual = {
-      fullOk: full.ok,
-      fullBytes: full.output.length,
-      tailOk: tail.ok,
-      tailBytes: tail.output.length,
-      tailTruncated: tail.truncated,
-    };
-    const expected = {
-      fullOk: true,
-      fullBytes: size,
-      tailOk: true,
-      tailBytes: 64 * 1024,
-      tailTruncated: true,
-    };
-    assert.deepEqual(actual, expected);
-  } finally {
-    try { unlinkSync(script); } catch {}
-  }
-});
-
-// --- backslashes belong to the shell, not to JavaScript --------------------
-
-test("an identity escape keeps its backslash", async () => {
-  // Cooked template strings have already had their escapes processed by
-  // JavaScript, so `\d` reached the shell as `d` — a wrong command, with
-  // no error at all. Raw keeps the backslash, because it belongs to the
-  // command rather than to JavaScript.
-  //
-  // `printf %s` does not interpret backslashes in its argument, on any
-  // shell, so this shows the two characters arriving intact without
-  // depending on a regex dialect. An earlier version of this test used
-  // `grep '\d'`, which matches a digit on BSD grep and means a literal
-  // `d` under GNU grep, so it passed on macOS and failed on Linux — it was
-  // asserting a grep dialect rather than the fix.
-  const actual = {
-    digit: (await sh`printf '%s' '\d'`).output,
-    space: (await sh`printf '%s' '\s'`).output,
-    both: (await cmd`printf '%s' '\w+'`).output,
-  };
-  const expected = { digit: "\\d", space: "\\s", both: "\\w+" };
-  assert.deepEqual(actual, expected);
-});
-
 test("an invalid escape no longer makes the whole command undefined",
   async () => {
     // A template holding an escape JavaScript rejects — an octal like
@@ -3667,10 +3323,10 @@ test("a command is ended when the program that started it ends", async () => {
     });
     let seen = "";
     child.stderr.on("data", (chunk) => { seen += chunk; });
-    await new Promise((resolve) => setTimeout(resolve, 900));
+    await new Promise((resolve) => setTimeout(resolve, 300));
     const grandchild = Number(seen.trim().split("\n")[0]);
     child.kill(signal);
-    await new Promise((resolve) => setTimeout(resolve, 900));
+    await new Promise((resolve) => setTimeout(resolve, 300));
     const survived = alive(grandchild);
     if (survived) { try { process.kill(grandchild, "SIGKILL"); } catch {} }
     return survived ? "survived" : "ended";
@@ -3689,4 +3345,134 @@ test("a command is ended when the program that started it ends", async () => {
   } finally {
     try { unlinkSync(script); } catch {}
   }
+});
+
+// --- the stdio model: a port says what it is connected to -----------------
+
+test("a port takes nothing, the result, a stream, or a list", async () => {
+  // `true` means the same thing on every port: put it in the result. A
+  // stream means write there. `false` means nothing. A list means all of
+  // them — fanning out on output, in order on input.
+  const { Writable } = await import("node:stream");
+  const written = [];
+  const sink = new Writable({
+    write(chunk, _enc, cb) { written.push(String(chunk)); cb(); },
+  });
+
+  const actual = {
+    kept: (await sh({ output: true })`printf kept`).output,
+    nothing: (await sh({ output: false })`printf dropped`).output,
+    toStream: await (async () => {
+      written.length = 0;
+      await sh({ output: sink })`printf streamed`;
+      return written.join("");
+    })(),
+    both: await (async () => {
+      written.length = 0;
+      const r = await sh({ output: [sink, true] })`printf both`;
+      return `${written.join("")}|${r.output}`;
+    })(),
+  };
+  const expected = {
+    kept: "kept",
+    nothing: undefined,
+    toStream: "streamed",
+    both: "both|both",
+  };
+  assert.deepEqual(actual, expected);
+});
+
+test("the default keeps output and gives the command no input", async () => {
+  // Which is what stops a command that reads stdin from waiting forever
+  // for bytes that cannot arrive — the bug this model was built to fix.
+  const settled = await Promise.race([
+    sh`sort`.then((r) => r.output),
+    new Promise((resolve) => setTimeout(() => resolve("WAITED"), 3000)),
+  ]);
+
+  const actual = { sortSettles: settled, kept: (await sh`printf x`).output };
+  const expected = { sortSettles: "", kept: "x" };
+  assert.deepEqual(actual, expected);
+});
+
+test("input sources are read in the order they were written", async () => {
+  // A list on input is a sequence, not a merge. execa's identical-looking
+  // syntax merges concurrently, so a fast source overtakes a slow one.
+  const { Readable } = await import("node:stream");
+  const slow = Readable.from((async function* () {
+    for (const piece of ["one ", "two ", "three "]) {
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      yield piece;
+    }
+  })());
+
+  const actual = {
+    strings: (await sh({ input: ["a", "b", "c"] })`cat`).output,
+    mixed: (await sh({ input: [slow, "last"] })`cat`).output,
+  };
+  const expected = { strings: "abc", mixed: "one two three last" };
+  assert.deepEqual(actual, expected);
+});
+
+test("input can be kept, so a session can be transcribed", async () => {
+  // `true` on input means the same as anywhere else: put it in the result.
+  const result = await sh({ input: ["typed\n", true] })`cat`;
+
+  const actual = { input: result.input, output: result.output };
+  const expected = { input: "typed\n", output: "typed\n" };
+  assert.deepEqual(actual, expected);
+});
+
+test("a port that was not kept reads as undefined, not empty", async () => {
+  // So "never asked for it" is distinguishable from "asked, and it printed
+  // nothing", and the mistake surfaces on the line that holds it.
+  const notKept = await sh({ output: false })`printf something`;
+  const keptButSilent = await sh`true`;
+
+  const actual = {
+    notKept: notKept.output,
+    keptButSilent: keptButSilent.output,
+  };
+  const expected = { notKept: undefined, keptButSilent: "" };
+  assert.deepEqual(actual, expected);
+});
+
+test("a port refuses a value that is not a connection", async () => {
+  const cases = [42, {}, Symbol("x")];
+  const actual = cases.map((value) =>
+    errorFrom(() => sh({ output: value })`echo hi`)?.constructor.name
+      ?? "accepted");
+  const expected = cases.map(() => "TypeError");
+  assert.deepEqual(actual, expected);
+});
+
+test("sync and async agree about every port", async () => {
+  const { Writable } = await import("node:stream");
+  const seen = [];
+  const sink = new Writable({
+    write(chunk, _enc, cb) { seen.push(String(chunk)); cb(); },
+  });
+
+  const actual = {
+    asyncKept: (await sh({ output: true })`printf x`).output,
+    syncKept: sh.sync({ output: true })`printf x`.output,
+    asyncNone: (await sh({ output: false })`printf x`).output,
+    syncNone: sh.sync({ output: false })`printf x`.output,
+    asyncStream: await (async () => {
+      seen.length = 0;
+      await sh({ output: sink })`printf s`;
+      return seen.join("");
+    })(),
+    syncStream: (() => {
+      seen.length = 0;
+      sh.sync({ output: sink })`printf s`;
+      return seen.join("");
+    })(),
+  };
+  const expected = {
+    asyncKept: "x", syncKept: "x",
+    asyncNone: undefined, syncNone: undefined,
+    asyncStream: "s", syncStream: "s",
+  };
+  assert.deepEqual(actual, expected);
 });

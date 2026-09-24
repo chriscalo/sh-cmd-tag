@@ -34,30 +34,41 @@ accepts an `AbortSignal`.
 **Durations** are milliseconds as a number, or a string with a unit —
 `"500ms"`, `"30s"`, `"5m"`, `"1.5h"`. A string without a unit is an error.
 
-**Colour.** `color: true` sets `FORCE_COLOR` in the child and `color: false`
-sets `NO_COLOR` — never both, since whichever is asked for clears the other.
-Unset, the library adds and removes nothing, so the child inherits whatever
-the environment already holds, which may be neither variable or both.
+**Working directory and shell.** Commands run where the caller is running
+unless `cwd` says otherwise. Left to itself the library picks a shell —
+`bash` where available — so the same command behaves the same way on macOS
+and Linux; `shell` accepts a string for a caller who wants zsh, dash, or a
+particular path, and `false` to execute directly.
 
-**Environment.** Commands run in the caller's working directory unless `cwd`
-says otherwise. Left to itself the library picks a shell — `bash` where
-available — so the same command behaves the same way on macOS and Linux;
-`shell` accepts a string for a caller who wants zsh, dash, or a particular
-path, and `false` to execute directly.
+**Where the bytes go.** Each of `input`, `output`, and `debug` names a port,
+and its value says what that port is connected to: `false` for nothing, `true`
+to put it in the result, a stream to read from or write to, and on `input` a
+string for literal text. Several connections are written as a list — read in
+order on `input`, since sources follow one another, and fanned out on `output`
+and `debug`, where every destination receives every byte. The defaults are
+`output: true`, `debug: true`, `input: false`, so a command is kept but not
+shown and gets no input — which is why a command that reads stdin finishes
+instead of waiting for bytes that cannot arrive. A port that was not kept
+reads as `undefined` rather than `""`, so "never asked for it" is
+distinguishable from "asked, and it printed nothing". Nothing is discarded, so
+a string you get back is all of it; a command producing more than a JavaScript
+string can hold fails with an error naming the command and the remedies.
 
-**Seeing output and keeping it are separate choices.** `live` and
-`interactive` echo a command's output to your terminal; `capture` decides
-whether the result holds it afterwards. Either can be yes or no
-independently, so watching a test suite scroll past and parsing its failures
-afterwards is one call. `capture: false` keeps nothing, which is what a
-command that never finishes needs; a number sets a byte limit, dropping the
-oldest bytes and setting `truncated`. `Infinity` spells "no limit", and
-anything that is not a whole number of bytes is refused at the call site.
-Iteration, pipelines, and forwarding see every byte regardless.
+**Terminals.** `interactive` hands the child the real file descriptors, so it
+sees a terminal and `vim`, `ssh`, and password prompts work — and its output
+is unobservable in exchange, because the bytes never pass through this
+process. Every other mode pipes, so iteration, pipelines, and the result
+always work. There is no colour option: a command decides colour by asking
+whether its output is a terminal, so colour appears wherever one is involved
+and not otherwise.
 
-**Shortcuts are bundles of settings, and your own configuration wins.**
-`sh.live({ output: false })` and `sh.safe({ throw: true })` mean what they
-say.
+**Environment.** `env` is the child's environment rather than an addition to
+it, the same meaning `child_process` and `subprocess` give it. Extending is
+explicit: `{ env: { ...process.env, FOO: "bar" } }`.
+
+**Commands do not outlive the program that started them.** Ending — including
+Ctrl-C, which is how most scripts end — signals each running command's process
+group on the way out.
 
 **Requirements.** Node 22 or newer, macOS or Linux, zero dependencies.
 Windows is not supported: the escaping is POSIX-specific.

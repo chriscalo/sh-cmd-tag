@@ -5,7 +5,7 @@ in this repository.
 
 For what the library is, read [README.md](README.md). For how code should
 look, read [STYLE.md](STYLE.md). For how it is designed, read the design
-documents under `specs/`.
+documents under `design/`.
 
 ## Commands
 
@@ -54,10 +54,10 @@ These are not preferences. Breaking one is a bug.
 
 ## Where the design lives
 
-- `specs/Process/Process.design.md` — the `Process` class: lifecycle,
+- `design/Process.md` — the `Process` class: lifecycle,
   streams, pipelines, stopping, timeouts, configuration. It is the single
   authority, and it ends with the behaviour list the tests are written from.
-- `specs/sh-cmd/sh-cmd.design.md` — the `sh` and `cmd` template tags, the
+- `design/sh-cmd.md` — the `sh` and `cmd` template tags, the
   architecture, and the security model including the threat model.
 
 Progress tracking lives on the GitHub issue, not in the repository. There is

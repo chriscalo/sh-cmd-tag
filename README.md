@@ -120,9 +120,10 @@ To echo a child's output to your own terminal instead, use `live`:
 await sh.live`npm run build`;
 ```
 
-That forwards stdout and stderr while still capturing both, and does not hand
-the child your stdin. `interactive` does the same and also inherits stdin, for
-commands that prompt:
+That sends stdout and stderr to your own, so you watch the build happen. It
+keeps nothing, which is what you want for something long-running.
+`interactive` hands the child the real terminal — stdin included — so
+commands that prompt, draw, or read keystrokes work properly:
 
 ```javascript
 await sh.interactive`npm init`;
@@ -249,8 +250,8 @@ try {
 } catch (error) {
   error.name;    // "ProcessError"
   error.code;    // exit code
-  error.output;  // captured stdout
-  error.debug;   // captured stderr
+  error.output;  // stdout, when the port kept it
+  error.debug;   // stderr, when the port kept it
 }
 ```
 
@@ -288,7 +289,6 @@ Any of these can be passed to `sh({ ... })` or `cmd({ ... })`:
 | `timeout`     | —       | Stop the process after this long             |
 | `gracePeriod` | `5000`  | Wait before escalating a stop to a kill      |
 | `signal`      | —       | An `AbortSignal`; aborting kills the process |
-| `capture`     | `true`  | Whether the result holds the output, or a byte limit |
 | `env`         | —       | Variables, merged over `process.env`         |
 | `cwd`         | —       | Working directory                            |
 
@@ -314,72 +314,76 @@ await sh.input("hello")`wc -w`;
 
 ### Colour
 
-Tools decide whether to emit colour by checking whether their output is a
-terminal, and forwarding hands them a pipe — so live output is not coloured
-by default. `color: true` sets `FORCE_COLOR` in the child; `color: false` sets
-`NO_COLOR`. Whichever you ask for clears the other, so the library never sets
-both — precedence between them varies between tools.
+There is no colour option, because there is nothing to configure. A command
+decides whether to emit colour by asking whether its output is a terminal.
 
-Left unset, the library adds and removes nothing: the child inherits your
-environment, which may hold neither variable or both. That is your
-environment's business, not something this library rewrites behind you.
+`interactive` hands the child the real terminal, so it sees one and prints in
+colour, exactly as it would if you had typed the command yourself. Every
+other mode routes the bytes through your program so you can read them, and
+the child sees a pipe and prints plainly — which is usually what you want,
+since that text is about to be parsed.
 
-```javascript
-await sh.live({ color: true })`npm test`;
-```
+You cannot have both for one command: keeping a copy means the bytes must
+pass through your program, and a child talking to a pipe knows it. That is
+how the two mechanisms work rather than a choice this library made. Issue #36
+proposes a pseudo-terminal, which would make both possible at once.
 
-Captured output keeps its escape codes: if you asked for colour, you get it.
+## Where the bytes go
 
-## Seeing output vs keeping it
-
-Running a command raises two separate questions, and you can answer either
-independently:
-
-1. **Do you want to see it?** — `live` (or `output` / `debug`) echoes the
-   output to your terminal as it happens.
-2. **Do you want to analyse it?** — `capture` decides whether the result
-   holds it afterwards.
+Each of `input`, `output`, and `debug` names a port, and its value says what
+that port is connected to.
 
 ```javascript
-await sh`git log`;                             // keep it, don't show it
-await sh.live`npm test`;                       // show it, and keep it
-sh.live({ capture: false })`npm run dev`;      // show it, don't keep it
-await sh({ capture: false })`noisy-cleanup`;   // neither
+output: true                                  // keep it, read it off the result
+output: false                                 // nothing
+output: process.stdout                        // show it as it happens
+output: createWriteStream("build.log")        // write it there
+output: [process.stdout, true]                // show it and keep it
+
+input:  false                                 // no input (the default)
+input:  "banana\napple\n"                     // that text
+input:  process.stdin                         // the human types
+input:  createReadStream("big.csv")           // that file
+input:  [".mode json\n", process.stdin]       // in order: text, then the human
+input:  [process.stdin, true]                 // and keep a transcript
 ```
 
-Iteration, pipelines, and the `output` stream see every byte regardless —
-`capture` governs what the *result* holds, not what you can watch.
+`true` means the same thing on every port: **put it in the result.** A list
+means several connections — read in order on `input`, since sources follow
+one another, and fanned out on `output` and `debug`, where every destination
+receives every byte.
 
-Turning it off matters most for a command that never finishes. `result.output`
-is a string, which is the right shape for a command that ends and the wrong
-one for a dev server: capturing it piles up bytes nobody will read, measured
-at about 16MB in a second and a half, which is roughly 38GB over an hour.
-
-A number sets a limit rather than switching capture off entirely:
+The defaults are `output: true`, `debug: true`, `input: false`: a command is
+kept but not shown, and gets no input. That last one matters, because it is
+why a command that reads stdin finishes rather than waiting forever for bytes
+that cannot arrive:
 
 ```javascript
-const result = await sh({ capture: 64 * 1024 })`noisy-build`;
-result.truncated;  // true if anything was dropped
+await sh`sort`;              // finishes immediately; nothing was offered
 ```
 
-When a limit is reached the **oldest** bytes go, because whatever made a
-command outproduce its own result is usually diagnosed from the end.
-
-A limit has to be a whole number of bytes. `Infinity` spells "no limit", the
-way it does for `gracePeriod`, and anything else — `NaN`, `-1`, `"64kb"` — is
-refused at the call site rather than quietly becoming something you did not
-ask for.
-
-`capture` means the same thing in `sync`, deciding what the result holds. It
-cannot save you the memory there, because a synchronous call buffers the whole
-output before it returns; for that, run the command asynchronously.
-
-And if what you want is a large output on disk, say that directly rather than
-routing it through a string:
+**A port that was not kept reads as `undefined`, not `""`** — so "I never
+asked for this" is distinguishable from "I asked, and it printed nothing",
+and a mistake surfaces on the line that holds it rather than flowing onward:
 
 ```javascript
-await sh`pg_dump mydb`.pipe(createWriteStream("dump.sql"));
+(await sh.live`npm run dev`).output;  // undefined — shown, not kept
+(await sh`true`).output;              // ""        — kept, printed nothing
 ```
+
+Anything unusual is a stream you supply, because that is what streams are
+for — keeping only the last part of a log, filtering to matching lines,
+counting without storing:
+
+```javascript
+await sh({ output: [process.stdout, myTransform] })`./noisy.sh`;
+```
+
+Nothing is dropped and there is no size setting, so a string you get back is
+all of it. The one hard edge is that a JavaScript string cannot hold more
+than about 512MB; a command producing more fails with an error naming the
+command and the remedies, rather than handing you something that looks
+complete and is not.
 
 ### Shortcuts are just settings
 
@@ -387,7 +391,7 @@ await sh`pg_dump mydb`.pipe(createWriteStream("dump.sql"));
 own configuration wins over the bundle:
 
 ```javascript
-await sh.live({ output: false })`quiet-after-all`;
+await sh.live({ output: true })`shown-and-kept-after-all`;
 await sh.safe({ throw: true })`throw-after-all`;
 ```
 

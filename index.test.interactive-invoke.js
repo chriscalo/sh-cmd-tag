@@ -8,7 +8,7 @@ import { sh } from "./index.js";
 try {
   // stdin is inherited, so `cat` reads what the test wrote here, and its
   // output is forwarded back out through this process's stdout.
-  await sh.interactive`cat`;
+  await sh({ input: process.stdin, output: process.stdout })`cat`;
 } catch (error) {
   process.stderr.write(`[INTERACTIVE-INVOKER] ${error.message}\n`);
   process.exit(1);

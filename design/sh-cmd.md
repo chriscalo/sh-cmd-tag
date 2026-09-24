@@ -6,7 +6,7 @@
 - **Tests**: `index.test.js`, plus the `index.test.*-invoke.js` /
   `index.test.*-emit.js` child-process fixture pairs
 - **Platforms**: POSIX — macOS and Linux. Windows is not supported; see
-  `specs/Process/Process.design.md` for why the escaping strategy makes that a
+  `design/Process.md` for why the escaping strategy makes that a
   correctness question rather than an effort question.
 - **Dependencies**: none, permanently. This is a security-sensitive library
   and its dependency surface stays empty.
@@ -41,7 +41,7 @@ Four layers, each owning one concern:
 The tags do not execute anything themselves: they build a command string and
 hand it to `Process`, which is the single asynchronous execution engine.
 `.sync` is the one path that bypasses `Process`, because a synchronous call
-cannot return a thenable. See `specs/Process/Process.design.md`.
+cannot return a thenable. See `design/Process.md`.
 
 ---
 

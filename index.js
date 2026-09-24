@@ -46,9 +46,13 @@ function shellEscape(value) {
 
 // ProcessResult class for successful command execution
 class ProcessResult {
-  constructor({ ok, error, output, debug }) {
+  constructor({ ok, error, input, output, debug }) {
     this.ok = ok;
     this.error = error;
+    // `input` holds what was sent, when the port asked to keep it, so an
+    // interactive session can be transcribed. `true` means the same thing
+    // on every port: put it in the result.
+    this.input = input;
     this.output = output;
     this.debug = debug;
   }
@@ -56,10 +60,13 @@ class ProcessResult {
 
 // ProcessError class for failed command execution
 class ProcessError extends Error {
-  constructor({ message, code, output, debug }) {
+  constructor({ message, code, input, output, debug }) {
     super(message);
     this.name = "ProcessError";
     this.code = code;
+    // The same three ports a result carries, so a failure is as
+    // inspectable as a success and the two shapes stay comparable.
+    this.input = input;
     this.output = output;
     this.debug = debug;
   }
@@ -141,7 +148,10 @@ function executeSyncCommand(cmd, args, spawnOptions, inputData, options) {
   // the failure is labelled — while the mechanism differs because the mode
   // does. gracePeriod is meaningless here and is ignored.
   const timeout = toMilliseconds(options.timeout, "timeout");
-  const limit = captureLimit(options.capture);
+  // The same port model as the asynchronous path, so one command does not
+  // mean two different things depending on how it was run.
+  const out = resolveOutputPort(options.output);
+  const err = resolveOutputPort(options.debug);
 
   try {
     const result = spawnSync(cmd, args, {
@@ -165,11 +175,14 @@ function executeSyncCommand(cmd, args, spawnOptions, inputData, options) {
     // SIGKILL, and would otherwise be reported as having timed out.
     const timedOut = result.error?.code === "ETIMEDOUT";
     
-    const capturedOutput = limitCapture(result.stdout || "", limit);
-    const capturedDebug = limitCapture(result.stderr || "", limit);
-    const output = capturedOutput.text;
-    const debug = capturedDebug.text;
-    const truncated = capturedOutput.truncated || capturedDebug.truncated;
+    const wholeOutput = result.stdout || "";
+    const wholeDebug = result.stderr || "";
+    for (const stream of out.streams) stream.write(wholeOutput);
+    for (const stream of err.streams) stream.write(wholeDebug);
+    // `undefined` rather than "" when a port was not kept, so "never asked
+    // for it" is distinguishable from "asked, and it printed nothing".
+    const output = out.keep ? wholeOutput : undefined;
+    const debug = err.keep ? wholeDebug : undefined;
 
     if (result.error || timedOut) {
       const error = new ProcessError({
@@ -183,14 +196,10 @@ function executeSyncCommand(cmd, args, spawnOptions, inputData, options) {
       if (timedOut) {
         error.timedOut = true;
       }
-      if (truncated) {
-        error.truncated = true;
-      }
       if (options.throw !== false) {
         throw error;
       }
-      return withTruncation(
-        new ProcessResult({ ok: false, error, output, debug }), truncated);
+      return new ProcessResult({ ok: false, error, output, debug });
     }
     
     if (result.status !== 0) {
@@ -208,19 +217,13 @@ function executeSyncCommand(cmd, args, spawnOptions, inputData, options) {
         output,
         debug,
       });
-      if (truncated) {
-        error.truncated = true;
-      }
       if (options.throw !== false) {
         throw error;
       }
-      return withTruncation(
-        new ProcessResult({ ok: false, error, output, debug }), truncated);
+      return new ProcessResult({ ok: false, error, output, debug });
     }
     
-    return withTruncation(
-      new ProcessResult({ ok: true, error: undefined, output, debug }),
-      truncated);
+    return new ProcessResult({ ok: true, error: undefined, output, debug });
   } catch (error) {
     if (error instanceof ProcessError) {
       throw error;
@@ -238,13 +241,6 @@ function executeSyncCommand(cmd, args, spawnOptions, inputData, options) {
     return new ProcessResult({ ok: false, error: processError, output: "", 
                                debug: "" });
   }
-}
-
-function withTruncation(result, truncated) {
-  if (truncated) {
-    result.truncated = true;
-  }
-  return result;
 }
 
 // Asynchronous execution
@@ -650,12 +646,17 @@ function addChainableProps(fn, useShell, isSync, baseOptions = {}) {
     configurable: true,
   });
   
-  // Live mode - forward both streams without inheriting stdin. The gap
-  // between a plain call, which captures silently, and .interactive, which
-  // also hands the child the parent's keyboard.
+  // Shown as it happens, and not kept. The default is the other way round
+  // — kept and not shown — so `live` is what distinguishes watching a
+  // command from collecting it. The parent's own streams are ordinary
+  // destinations here; there is no special case for "the terminal".
   Object.defineProperty(fn, "live", {
     get() {
-      const liveOptions = { ...baseOptions, output: true, debug: true };
+      const liveOptions = {
+        ...baseOptions,
+        output: process.stdout,
+        debug: process.stderr,
+      };
       const liveFn = (strings, ...values) => {
         if (typeof strings === "object" && !Array.isArray(strings)) {
           const options = { ...liveOptions, ...strings };
@@ -681,11 +682,15 @@ function addChainableProps(fn, useShell, isSync, baseOptions = {}) {
   Object.defineProperty(fn, "interactive", {
     get() {
       const interactiveFn = (strings, ...values) => {
+        // The one mode that hands the child the real file descriptors, so
+        // it sees a true terminal and vim, ssh, and password prompts work.
+        // Its output is unobservable in exchange: with the descriptors
+        // handed over, the bytes never pass through this process at all.
         const mergedOptions = {
           ...baseOptions,
-          input: true,
-          output: true,
-          debug: true,
+          input: process.stdin,
+          output: process.stdout,
+          debug: process.stderr,
         };
         if (typeof strings === "object" && !Array.isArray(strings)) {
           const options = { ...mergedOptions, ...strings };
@@ -705,7 +710,12 @@ function addChainableProps(fn, useShell, isSync, baseOptions = {}) {
         interactiveFn,
         useShell,
         isSync,
-        { ...baseOptions, input: true, output: true, debug: true },
+        {
+          ...baseOptions,
+          input: process.stdin,
+          output: process.stdout,
+          debug: process.stderr,
+        },
       );
       
       return interactiveFn;
@@ -796,65 +806,10 @@ function resolveShell(shell) {
 const MAX_CAPTURE_BYTES = 0x1fffffe8;
 
 /**
- * Resolves the `capture` option to a limit in bytes.
- */
-function captureLimit(capture) {
-  if (capture === false) {
-    return 0;
-  }
-  if (capture === true || capture === undefined || capture === null) {
-    return MAX_CAPTURE_BYTES;
-  }
-  // Infinity spells "no limit", the same way it does for gracePeriod. The
-  // net still applies, because a string cannot hold more than that.
-  if (capture === Infinity) {
-    return MAX_CAPTURE_BYTES;
-  }
-  // Everything else has to be a byte count, and saying so beats quietly
-  // clamping: NaN and "64kb" fell through to an unbounded capture, while
-  // -1 clamped to zero — so a caller who asked for a limit got no limit,
-  // and a caller who mistyped one got nothing, both in silence.
-  if (!Number.isSafeInteger(capture) || capture < 0) {
-    const received = typeof capture === "string"
-      ? JSON.stringify(capture)
-      : String(capture);
-    throw new TypeError(
-      `capture must be true, false, or a non-negative whole number of ` +
-      `bytes — received ${received}`,
-    );
-  }
-  return Math.min(capture, MAX_CAPTURE_BYTES);
-}
-
-/**
  * Joins captured chunks into the string a result carries.
  */
 function joinCapture(chunks) {
   return Buffer.concat(chunks).toString();
-}
-
-/**
- * Applies a capture limit to text already in hand, keeping the tail.
- *
- * `spawnSync` buffers everything before it returns, so synchronously there
- * is no streaming to opt out of and `capture` cannot save the memory the
- * way it does asynchronously. It still decides what the result holds, which
- * is what the option means — and honouring it here keeps one command from
- * meaning two different things depending on how it was run.
- */
-function limitCapture(text, limit) {
-  // Asking for nothing and getting nothing is not truncation, and the
-  // streaming path does not flag it either.
-  if (limit === 0) {
-    return { text: "", truncated: false };
-  }
-  const buffer = Buffer.from(text);
-  if (buffer.length <= limit) {
-    return { text, truncated: false };
-  }
-  // The oldest bytes go, matching the streaming path.
-  return { text: buffer.subarray(buffer.length - limit).toString(),
-           truncated: true };
 }
 
 const DURATION_PATTERN = /^(\d+(?:\.\d+)?)(ms|s|m|h)$/;
@@ -950,6 +905,93 @@ function deepFreeze(value) {
  * output and enhanced control capabilities.
  */
 /**
+ * What a port is connected to.
+ *
+ * A port's value names its connections: `false` for nothing, `true` to put
+ * it in the result, a stream to read from or write to, and on `input` a
+ * string for literal text. Several connections are written as a list —
+ * ordered on `input`, since sources are read one after another, and
+ * fanned out on `output` and `debug`, where every destination receives
+ * every byte. Those are the only readings of each that are not nonsense.
+ *
+ * The parent's own streams need no special case, because `process.stdout`
+ * is a stream like any other.
+ */
+function resolveOutputPort(value) {
+  const list = value === undefined
+    ? [true]
+    : value === false
+      ? []
+      : Array.isArray(value) ? value : [value];
+
+  const streams = [];
+  let keep = false;
+  for (const item of list) {
+    if (item === true) keep = true;
+    else if (item === false || item === undefined || item === null) continue;
+    else if (isWritable(item)) streams.push(item);
+    else {
+      throw new TypeError(
+        `output and debug take false, true, a writable stream, or a list ` +
+        `of those — received ${describeValue(item)}`,
+      );
+    }
+  }
+  return { streams, keep };
+}
+
+function resolveInputPort(value) {
+  const list = value === undefined || value === false
+    ? []
+    : Array.isArray(value) ? value : [value];
+
+  const sources = [];
+  let keep = false;
+  for (const item of list) {
+    if (item === true) keep = true;
+    else if (item === false || item === undefined || item === null) continue;
+    else if (typeof item === "string" || item instanceof String) {
+      sources.push(String(item));
+    } else if (isStream(item)) sources.push(item);
+    else {
+      throw new TypeError(
+        `input takes false, true, a string, a readable stream, or a list ` +
+        `of those — received ${describeValue(item)}`,
+      );
+    }
+  }
+  return { sources, keep };
+}
+
+function isWritable(value) {
+  return Boolean(value) && typeof value.write === "function";
+}
+
+/**
+ * Whether a port gets the real file descriptor or a pipe.
+ *
+ * The real one when the parent's own stream is the port's only connection,
+ * so the child sees a true terminal and `vim`, `ssh`, and password prompts
+ * work. A pipe otherwise, because a copy can only be made of bytes that
+ * pass through this process — asking for one is asking for a pipe, and
+ * with the descriptor handed over Node reports the stream as `null`,
+ * because there is nothing to read.
+ *
+ * That trade is unavoidable rather than chosen: a real terminal and a
+ * captured copy cannot both be had on one descriptor.
+ */
+function descriptorFor(value, parentStream) {
+  const only = Array.isArray(value) && value.length === 1 ? value[0] : value;
+  return only === parentStream ? "inherit" : "pipe";
+}
+
+function describeValue(value) {
+  if (typeof value === "string") return JSON.stringify(value);
+  if (typeof value === "object") return Object.prototype.toString.call(value);
+  return String(value);
+}
+
+/**
  * Commands still running, so they can be ended when this process is.
  *
  * Every command is spawned into its own process group, which is what lets
@@ -1020,11 +1062,16 @@ class Process {
   #settled = false;
   #timedOut = false;
   #timeoutTimer;
+  #inputChunks = [];
   #outputChunks = [];
   #debugChunks = [];
-  #captured = { output: 0, debug: 0 };
-  #captureLimit = MAX_CAPTURE_BYTES;
-  #truncated = false;
+  #captured = { input: 0, output: 0, debug: 0 };
+  #overflowed = null;
+  #keepOutput = true;
+  #keepDebug = true;
+  #keepInput = false;
+  #inputWired = false;
+  #stdio = ["pipe", "pipe", "pipe"];
   #inheritedStdin = false;
   #abortListener;
   #detachInput;
@@ -1045,7 +1092,6 @@ class Process {
     toMilliseconds(this.#config.gracePeriod, "gracePeriod");
     
     this.#shell = resolveShell(this.#config.shell);
-    this.#captureLimit = captureLimit(this.#config.capture);
     
     const { promise, resolve, reject } = Promise.withResolvers();
     this.#promise = promise;
@@ -1063,6 +1109,15 @@ class Process {
       debug: new PassThrough(),
       input: new PassThrough(),
     };
+
+    // A port fed from outside is connected, not absent. A pipeline wires
+    // its stages together before starting them, and a caller may write to
+    // `input` before `start()`, so noticing either is what separates "no
+    // input was declared" — which closes stdin — from "input arrives by
+    // another route", which must not.
+    this.#io.input.on("pipe", () => {
+      this.#inputWired = true;
+    });
     
     if (this.config.immediate) {
       this.start();
@@ -1161,6 +1216,12 @@ class Process {
         ? this.#commandString
         : parseCommand(this.#commandString.trim()));
     
+    this.#stdio = [
+      descriptorFor(this.#config.input, process.stdin),
+      descriptorFor(this.#config.output, process.stdout),
+      descriptorFor(this.#config.debug, process.stderr),
+    ];
+
     this.#childProcess = spawn(
       useShell ? this.#commandString : parts[0],
       useShell ? [] : parts.slice(1),
@@ -1168,7 +1229,25 @@ class Process {
         shell: this.#shell,
         cwd: this.#config.cwd,
         env: buildEnvironment(this.#config),
-        stdio: ["pipe", "pipe", "pipe"],
+        // A child either receives the real file descriptors or receives
+        // pipes, never both: with "inherit" Node reports child.stdout as
+        // null, because no pipe exists and there is nothing to read.
+        //
+        // So `interactive` hands them over — which is what makes vim draw
+        // correctly, ssh hide a password, and arrow-key menus respond —
+        // and accepts that its output cannot be observed. Everything else
+        // pipes, so iteration, pipelines, and the result always work.
+        //
+        // Decided per port, from what that port is connected to: the real
+        // descriptor when the parent's own stream is the only connection,
+        // a pipe otherwise. A copy can only be made of bytes that pass
+        // through this process, so asking for one is asking for a pipe.
+        //
+        // A separate `interactive` flag was tried and removed, because it
+        // could contradict the ports it was meant to describe:
+        // `sh.interactive.input("data")` asked for the terminal and for
+        // literal text on the same descriptor, and hung.
+        stdio: this.#stdio,
         // The child leads its own process group, so stopping it can reach
         // the whole tree. Without this, `sh`sleep 30`` stops the shell and
         // leaves sleep running — holding the output pipe open, so the
@@ -1193,22 +1272,23 @@ class Process {
   #bridgeStreams() {
     const child = this.#childProcess;
     
+    const out = resolveOutputPort(this.#config.output);
+    const err = resolveOutputPort(this.#config.debug);
+    this.#keepOutput = out.keep;
+    this.#keepDebug = err.keep;
+
     if (child.stdout) {
       child.stdout.pipe(this.#io.output);
       child.stdout.on("data", (chunk) => {
-        this.#capture(this.#outputChunks, chunk, "output");
-        if (this.#config.output) {
-          process.stdout.write(chunk);
-        }
+        if (out.keep) this.#capture(this.#outputChunks, chunk, "output");
+        for (const stream of out.streams) stream.write(chunk);
       });
     }
     if (child.stderr) {
       child.stderr.pipe(this.#io.debug);
       child.stderr.on("data", (chunk) => {
-        this.#capture(this.#debugChunks, chunk, "debug");
-        if (this.#config.debug) {
-          process.stderr.write(chunk);
-        }
+        if (err.keep) this.#capture(this.#debugChunks, chunk, "debug");
+        for (const stream of err.streams) stream.write(chunk);
       });
     }
     if (child.stdin) {
@@ -1279,67 +1359,117 @@ class Process {
   }
   
   #connectInput() {
-    const { input } = this.#config;
-    if (input === undefined || input === null || input === false) {
-      return;
-    }
-    if (input === true) {
-      process.stdin.pipe(this.#io.input);
-      this.#inheritedStdin = true;
-      return;
-    }
-    if (typeof input === "string") {
-      this.#io.input.end(input);
-      return;
-    }
-    if (isStream(input)) {
-      // A source the caller owns can fail, and without a listener that is an
-      // unhandled error event. Closing both ends means the child sees EOF
-      // rather than waiting forever for input that will never arrive.
-      const onSourceError = () => {
-        this.#io.input.destroy();
-        this.#childProcess?.stdin?.destroy();
-      };
-      input.on("error", onSourceError);
-      input.pipe(this.#io.input);
-      // Held so both can be released once the process settles. A caller
-      // reusing one stream across commands would otherwise leave a listener
-      // and a pipe destination behind for each, until Node warns about the
-      // leak it has come to look like.
-      this.#detachInput = () => {
-        input.off("error", onSourceError);
-        input.unpipe(this.#io.input);
-      };
-    }
-  }
-  
-  #capture(chunks, chunk, which) {
-    const limit = this.#captureLimit;
-    if (limit === 0) {
+    // An inherited descriptor is handed to the child whole: the bytes never
+    // pass through this process, so there is nothing here to feed or read.
+    // Doing it anyway consumed the very bytes the child was meant to get.
+    if (this.#stdio[0] === "inherit") {
       return;
     }
 
+    const { sources, keep } = resolveInputPort(this.#config.input);
+    this.#keepInput = keep;
+
+    // Nothing declared means the command gets EOF rather than waiting for
+    // bytes that cannot arrive. A source can be offered unconditionally and
+    // a sink cannot: an unread readable is drained harmlessly, while an
+    // unwritten writable can never be closed, because "will write later"
+    // and "will never write" are the same observation.
+    //
+    // Unless something is already feeding it — a pipeline stage, or a
+    // caller who wrote to `input` before `start()`. Both are connections
+    // made by another route rather than absent ones.
+    if (sources.length === 0) {
+      const fedElsewhere = this.#inputWired
+        || this.#io.input.writableLength > 0
+        || this.#io.input.writableEnded;
+      if (!fedElsewhere) {
+        this.#io.input.end();
+      }
+      return;
+    }
+
+    this.#feedInput(sources, 0);
+  }
+
+  /**
+   * Feeds the sources one after another, in the order they were written.
+   *
+   * A list on `input` is a sequence, not a merge: `[".mode json\n", stdin]`
+   * means the text arrives and then the human types. Merging them
+   * concurrently would interleave the two, which is what execa's
+   * identical-looking syntax does.
+   */
+  #feedInput(sources, index) {
+    if (index >= sources.length) {
+      this.#io.input.end();
+      return;
+    }
+
+    const source = sources[index];
+    const next = () => this.#feedInput(sources, index + 1);
+
+    if (typeof source === "string") {
+      if (this.#keepInput) {
+        this.#capture(this.#inputChunks, Buffer.from(source), "input");
+      }
+      this.#io.input.write(source, next);
+      return;
+    }
+
+    // A source the caller owns can fail, and without a listener that is an
+    // unhandled error event. Closing both ends means the child sees EOF
+    // rather than waiting forever for input that will never arrive.
+    const onError = () => {
+      this.#io.input.destroy();
+      this.#childProcess?.stdin?.destroy();
+    };
+    const onData = (chunk) => {
+      if (this.#keepInput) this.#capture(this.#inputChunks, chunk, "input");
+    };
+
+    source.on("error", onError);
+    source.on("data", onData);
+    source.pipe(this.#io.input, { end: false });
+    source.once("end", () => {
+      source.off("error", onError);
+      source.off("data", onData);
+      source.unpipe(this.#io.input);
+      next();
+    });
+
+    if (source === process.stdin) {
+      this.#inheritedStdin = true;
+    }
+
+    // Held so listeners and the pipe are released once the process settles.
+    // A caller reusing one stream across commands would otherwise leave
+    // both behind for each, until Node warns about the leak it resembles.
+    this.#detachInput = () => {
+      source.off("error", onError);
+      source.off("data", onData);
+      source.unpipe(this.#io.input);
+    };
+  }
+
+  #capture(chunks, chunk, which) {
     chunks.push(chunk);
     this.#captured[which] += chunk.length;
 
-    // Over the limit, the oldest bytes go rather than the newest. Whatever
-    // made a command outproduce its own result is diagnosed from the end —
-    // the error, the last thing it managed — and dropping the tail would
-    // throw away exactly that.
-    while (this.#captured[which] > limit && chunks.length > 0) {
-      this.#truncated = true;
-      const excess = this.#captured[which] - limit;
-      const oldest = chunks[0];
-      if (oldest.length <= excess) {
-        chunks.shift();
-        this.#captured[which] -= oldest.length;
-      } else {
-        chunks[0] = oldest.subarray(excess);
-        this.#captured[which] -= excess;
-      }
+    // Nothing is discarded by choice, so a returned string is all of it.
+    // The one hard limit is what a JavaScript string can hold, and crossing
+    // it is reported rather than clipped: a result that looks complete and
+    // is not is the failure this design keeps removing. Because the count
+    // is known while accumulating, this happens on crossing rather than
+    // when Buffer.concat().toString() raises RangeError deep inside the
+    // completion handler, where it left the process never settling at all.
+    if (this.#captured[which] > MAX_CAPTURE_BYTES && !this.#overflowed) {
+      this.#overflowed = which;
+      chunks.length = 0;
+      this.#captured[which] = 0;
+      this.kill();
     }
   }
-  
+
   #settleOn(child) {
     const finish = (error) => {
       if (this.#settled) return;
@@ -1368,29 +1498,49 @@ class Process {
         this.#inheritedStdin = false;
       }
       
-      const output = joinCapture(this.#outputChunks);
-      const debug = joinCapture(this.#debugChunks);
+      if (this.#overflowed && !error) {
+        error = new ProcessError({
+          message:
+            `${this.#commandString} produced more than ` +
+            `${MAX_CAPTURE_BYTES} bytes on ${this.#overflowed}, which is ` +
+            `more than a JavaScript string can hold, so it cannot be ` +
+            `returned as result.${this.#overflowed}. Send it somewhere ` +
+            `that is not a string — a writable stream — or consume it as ` +
+            `it arrives with for await, or drop it with ` +
+            `${this.#overflowed}: false.`,
+          code: "EOVERFLOW",
+          output: "",
+          debug: "",
+        });
+      }
+
+      // `undefined` rather than "" when a port was not kept, so "never
+      // asked for it" is distinguishable from "asked, and it printed
+      // nothing" — and the mistake surfaces on the line that holds it.
+      const input = this.#keepInput
+        ? joinCapture(this.#inputChunks)
+        : undefined;
+      const output = this.#keepOutput
+        ? joinCapture(this.#outputChunks)
+        : undefined;
+      const debug = this.#keepDebug
+        ? joinCapture(this.#debugChunks)
+        : undefined;
       
       if (!error) {
-        const result = new ProcessResult({ ok: true, output, debug });
-        if (this.#truncated) {
-          result.truncated = true;
-        }
+        const result = new ProcessResult({ ok: true, input, output, debug });
         this.#resolve(result);
         return;
       }
-      
+
+      error.input = input;
       error.output = output;
       error.debug = debug;
-      if (this.#truncated) {
-        error.truncated = true;
-      }
-      
+
       if (this.#config.throw === false) {
-        const failed = new ProcessResult({ ok: false, error, output, debug });
-        if (this.#truncated) {
-          failed.truncated = true;
-        }
+        const failed = new ProcessResult({
+          ok: false, error, input, output, debug,
+        });
         this.#resolve(failed);
       } else {
         this.#reject(error);
@@ -1634,9 +1784,14 @@ class Pipeline {
       const command = inherited.shell === false
         ? buildCommandArgs(strings, values)
         : buildShellExpression(strings, values);
-      next = new Process(command, inherited);
+      // Deferred, so the upstream is attached before the stage starts.
+      // Starting on construction meant a stage saw no input yet and closed
+      // its stdin, and the bytes arriving a moment later had nowhere to go.
+      next = new Process(command, { ...inherited, immediate: false });
     } else if (Array.isArray(args[0])) {
-      next = new Process(args[0], { ...inherited, shell: false });
+      next = new Process(args[0], {
+        ...inherited, shell: false, immediate: false,
+      });
     } else if (args[0] && typeof args[0].write === "function") {
       next = args[0];
     } else {
@@ -1647,6 +1802,8 @@ class Pipeline {
     }
     
     source.pipe(next instanceof Process ? next.input : next);
+    // Pushed before starting, so the loop below reaches the new stage too.
+    this.#stages.push(next);
     // Piping is a commitment to run: without this a deferred source never
     // starts, and iterating the chain waits on output that cannot arrive.
     for (const stage of this.#stages) {
@@ -1654,8 +1811,6 @@ class Pipeline {
         stage.start();
       }
     }
-    this.#stages.push(next);
-    
     if (!(next instanceof Process)) {
       // Watched from here rather than when the pipeline is awaited: a stream
       // that fails before anyone is listening emits an unhandled "error",
@@ -1678,8 +1833,8 @@ class Pipeline {
   
   #inheritedConfig() {
     const source = this.#stages[0];
-    const { shell, cwd, env, color, throw: shouldThrow } = source.config ?? {};
-    return { shell, cwd, env, color, throw: shouldThrow };
+    const { shell, cwd, env, throw: shouldThrow } = source.config ?? {};
+    return { shell, cwd, env, throw: shouldThrow };
   }
   
   /**

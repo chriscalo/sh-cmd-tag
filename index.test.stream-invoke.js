@@ -9,7 +9,7 @@ const emitterPath = join(__dirname, "index.test.stream-emit.js");
 
 try {
   await withStdioOverrides(async () => {
-    await sh({ output: true, debug: true })`node "${emitterPath}"`;
+    await sh({ output: process.stdout, debug: process.stderr })`node "${emitterPath}"`;
   });
 } catch (error) {
   console.error("[INVOKER] Error:", error);
