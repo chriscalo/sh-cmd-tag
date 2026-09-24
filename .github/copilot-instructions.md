@@ -175,7 +175,6 @@ When modifying security-related code:
 ├── package.json               # ES module configuration
 ├── README.md                  # API documentation
 ├── AGENTS.md                  # AI assistant behavioral rules
-├── CLAUDE.md                  # Claude-specific guidance
 ├── STYLE.md                   # Code style guidelines
 └── docs/                      # Additional documentation
 ```

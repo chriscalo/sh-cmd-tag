@@ -8,6 +8,45 @@ Copilot, Claude) operating in this repository.
 
 ---
 
+## ⚙️ Commands
+
+```bash
+npm test          # Runs all tests with the Node.js test runner
+npm run test:verbose  # Runs tests with debug output
+```
+
+Always run the full test suite after making **any** change. It covers core
+shell execution, security and escaping, streaming output, object/array
+interpolation, and error handling, so a regression anywhere shows up there.
+
+---
+
+## 🏗️ Architecture
+
+This is a **Node.js ES module** providing template literal shell command
+execution with a security-first design. All JavaScript uses ES module syntax
+(`import`/`export`) via `"type": "module"` in `package.json`.
+
+### Core components
+
+- **`sh`** - async shell execution with interpolation safety
+- **`cmd`** - direct command execution (sync/async modes)
+- **Security layer** - automatic shell escaping and injection prevention
+- **Streaming support** - real-time output processing
+- **`ProcessResult`/`ProcessError`** - result and error handling
+
+### Key features
+
+- Template literal syntax for intuitive command construction
+- Safe interpolation with automatic shell escaping
+- Object/array interpolation (objects become `--flag=value` pairs, arrays
+  become space-separated)
+- Streaming output with latency tracking
+- Security-first approach preventing shell injection
+- Comprehensive error reporting with exit codes and output
+
+---
+
 ## 🎯 Agent Behavior Rules
 
 - Obey all style and testing rules defined in [STYLE.md](STYLE.md).
@@ -45,6 +84,19 @@ For non-trivial bugs:
 - Use descriptive test names that explain the behavior being tested
 - Always define `actual` and `expected` variables in tests for clarity
 - Test security edge cases thoroughly when touching escaping logic
+
+Tests use the Node.js built-in test runner - no external test framework:
+
+```javascript
+import { test } from "node:test";
+import { strict as assert } from "node:assert";
+
+test("description", () => {
+  const actual = functionToTest();
+  const expected = expectedValue;
+  assert.equal(actual, expected);
+});
+```
 
 ---
 
