@@ -20,6 +20,14 @@ handlers and pipes can be attached before the process starts. `live`
 forwards both output streams to the terminal while capturing them;
 `interactive` also inherits stdin.
 
+**Driving a command as it runs.** Give `input` a stream you hold and the
+port stays open for as long as that stream does, so a REPL or a database
+shell can be written to and read from in turn. Writing to `proc.input`
+directly works before `start()`, where the buffered bytes become the
+connection; a port with nothing connected closes stdin at once — which is
+what lets `` sh`sort` `` finish — so writing to it afterwards throws instead
+of quietly going nowhere.
+
 **Pipelines.** `pipe` accepts a command or a writable stream and returns the
 pipeline so far: awaitable when every stage has finished, iterable over the
 last stage, and pipeable onward. A pipeline succeeds only if every stage

@@ -250,6 +250,34 @@ the same objects once the process starts, so handlers and pipes set up
 beforehand receive what follows. Input written before the start is buffered
 and flushes when the process begins. `start()` is safe to call more than once.
 
+## Driving a command as it runs
+
+To write to a command while reading what it writes back — a REPL, a database
+shell, anything conversational — give the input port a stream you hold:
+
+```javascript
+import { PassThrough } from "node:stream";
+
+const keyboard = new PassThrough();
+const repl = sh({ input: keyboard })`bc`;
+
+keyboard.write("1 + 1\n");
+
+for await (const chunk of repl) {
+  console.log(String(chunk).trim());   // "2"
+  keyboard.end();
+}
+```
+
+The port stays open for as long as that stream does, so the conversation can
+go both ways for as long as you need.
+
+Writing to `proc.input` works too, but only *before* `start()`, where the
+buffered bytes become the connection. A command with nothing connected to
+its input closes stdin as soon as it starts — that is what lets `` sh`sort` ``
+finish instead of waiting forever — so writing to `proc.input` afterwards
+throws rather than quietly going nowhere.
+
 ## Error handling
 
 Commands throw on a non-zero exit by default:

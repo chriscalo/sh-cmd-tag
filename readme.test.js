@@ -280,6 +280,44 @@ test("README: deferred execution, error handling, and safe", async () => {
   assert.deepEqual(actual, expected);
 });
 
+test("README: driving a command as it runs", async () => {
+  // The README shows `bc`, which is not installed everywhere; `cat` makes
+  // the same claim — a port fed by a stream the caller holds stays open,
+  // so the conversation can go both ways.
+  const { PassThrough } = await import("node:stream");
+  const keyboard = new PassThrough();
+  const repl = sh({ input: keyboard })`cat`;
+
+  const replies = [];
+  const reading = (async () => {
+    for await (const chunk of repl) {
+      replies.push(String(chunk));
+    }
+  })();
+
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 50));
+  keyboard.write("1 + 1\n");
+  await settle();
+  const midConversation = replies.join("");
+  keyboard.end();
+  await reading;
+
+  // "writing to `proc.input` afterwards throws rather than quietly going
+  // nowhere"
+  const closed = sh.safe`cat`;
+  let refusal = "accepted";
+  try {
+    closed.input.write("nowhere\n");
+  } catch (error) {
+    refusal = error.constructor.name;
+  }
+  await closed;
+
+  const actual = { midConversation, refusal };
+  const expected = { midConversation: "1 + 1\n", refusal: "Error" };
+  assert.deepEqual(actual, expected);
+});
+
 test("README: choosing a shell, and the chainable shorthands", async () => {
   const actual = {
     namedShell: (await sh({ shell: "/bin/dash" })`echo $0`).output.trim(),
@@ -395,6 +433,6 @@ test("README: every javascript block is accounted for", () => {
     .filter((fence) => fence.slice(3).trim() === "javascript").length;
 
   const actual = { javascriptBlocks };
-  const expected = { javascriptBlocks: 35 };
+  const expected = { javascriptBlocks: 36 };
   assert.deepEqual(actual, expected);
 });

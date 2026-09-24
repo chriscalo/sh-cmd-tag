@@ -1280,6 +1280,38 @@ function describeValue(value) {
 }
 
 /**
+ * The writable side of a process's `input` port.
+ *
+ * A port with nothing connected to it closes the child's stdin at once, so
+ * that `sh`sort`` finishes instead of waiting for bytes that cannot arrive.
+ * That left a trap: writing to `proc.input` afterwards raised a
+ * `write after end` that the stdin error handler swallowed along with the
+ * EPIPE it exists for, and the bytes vanished with nothing said. Every way
+ * of driving a command by hand failed that way *except* writing before
+ * `start()`, which works because the buffered bytes are themselves the
+ * connection — so the same two lines worked or silently did nothing
+ * depending on their order.
+ *
+ * Silence is the one outcome this model refuses. The write fails where it
+ * was made, and the message names both ways to say what was meant.
+ */
+class InputPort extends PassThrough {
+  #refusal;
+
+  closeForWantOfAConnection(refusal) {
+    this.#refusal = refusal;
+    this.end();
+  }
+
+  write(chunk, encoding, callback) {
+    if (this.#refusal !== undefined) {
+      throw new Error(this.#refusal);
+    }
+    return super.write(chunk, encoding, callback);
+  }
+}
+
+/**
  * Commands still running, so they can be ended when this process is.
  *
  * Every command is spawned into its own process group, which is what lets
@@ -1396,7 +1428,7 @@ class Process {
     this.#io = {
       output: new PassThrough(),
       debug: new PassThrough(),
-      input: new PassThrough(),
+      input: new InputPort(),
     };
 
     // A port fed from outside is connected, not absent. A pipeline wires
@@ -1676,7 +1708,15 @@ class Process {
         || this.#io.input.writableLength > 0
         || this.#io.input.writableEnded;
       if (!fedElsewhere) {
-        this.#io.input.end();
+        this.#io.input.closeForWantOfAConnection(
+          `This command has no input connected, so there is nothing for ` +
+          `this write to reach: ${this.#commandString}\n` +
+          `  To feed it as it runs, give the port a stream you write to: ` +
+          `sh({ input: myStream })\n` +
+          `  To send text, say so: sh({ input: "..." })\n` +
+          `  To write to \`input\` by hand, do it before start(): ` +
+          `sh({ immediate: false })`
+        );
       }
       return;
     }

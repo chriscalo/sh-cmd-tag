@@ -3347,6 +3347,72 @@ test("the published source is text, so every tool can read it", async () => {
   assert.deepEqual(actual, expected);
 });
 
+// --- writing to the input port -------------------------------------------
+
+test("a command can be driven as it runs, through a stream you supply", async () => {
+  // Use case 13 of the design: drive a REPL. Write, read what came back,
+  // write again. The port model's own answer — anything unusual is a
+  // stream you supply — has to actually carry this, so it is checked
+  // rather than assumed.
+  const { PassThrough } = await import("node:stream");
+  const keyboard = new PassThrough();
+  const proc = sh({ input: keyboard })`cat`;
+
+  const seen = [];
+  const reading = (async () => {
+    for await (const chunk of proc) {
+      seen.push(String(chunk));
+    }
+  })();
+
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 50));
+  keyboard.write("first\n");
+  await settle();
+  const afterFirst = seen.join("");
+  keyboard.write("second\n");
+  await settle();
+  const afterSecond = seen.join("");
+  keyboard.end();
+  await reading;
+
+  const actual = { afterFirst, afterSecond };
+  const expected = { afterFirst: "first\n", afterSecond: "first\nsecond\n" };
+  assert.deepEqual(actual, expected);
+});
+
+test("writing to an input port with nothing connected fails where it was written", async () => {
+  // It used to vanish. A port with nothing connected closes the child's
+  // stdin at once so `sh`sort`` finishes, and the `write after end` that
+  // followed was swallowed by the handler that exists for EPIPE. Writing
+  // before `start()` worked, because the buffered bytes are themselves the
+  // connection — so the same two lines worked or did nothing depending on
+  // their order, and nothing said which.
+  const started = sh.safe`cat`;
+  const beforeStart = sh.safe({ immediate: false })`cat`;
+  beforeStart.input.write("buffered\n");
+  beforeStart.input.end();
+  beforeStart.start();
+
+  const refusal = errorFrom(() => started.input.write("dropped\n"));
+  const actual = {
+    refused: refusal?.constructor.name ?? "accepted",
+    namesTheCommand: refusal?.message.includes("cat") ?? false,
+    offersAStream: refusal?.message.includes("input: myStream") ?? false,
+    offersDeferredStart: refusal?.message.includes("immediate: false") ?? false,
+    // The supported way still works, and is the same two lines reordered.
+    beforeStartStillWorks: (await beforeStart).output,
+  };
+  const expected = {
+    refused: "Error",
+    namesTheCommand: true,
+    offersAStream: true,
+    offersDeferredStart: true,
+    beforeStartStillWorks: "buffered\n",
+  };
+  assert.deepEqual(actual, expected);
+  await started;
+});
+
 // --- head and tail: the two bounded writables worth shipping --------------
 
 /**

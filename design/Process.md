@@ -157,11 +157,36 @@ process at all.
 
 So `interactive` hands over the real descriptors and its output is
 deliberately unobservable, and every other mode pipes, so iteration,
-pipelines, and `result.output` always work. The choice is explicit rather
-than inferred from the destination list; an earlier draft picked real
-descriptors whenever the terminal was a port's only connection, which meant
-adding one destination silently changed whether the child saw a terminal and
-silently broke iteration.
+pipelines, and `result.output` always work.
+
+**The choice is read off the port, one port at a time.** A port gets the real
+descriptor when the parent's own stream is its *only* connection — `input:
+process.stdin`, `output: process.stdout` — and a pipe in every other case.
+`interactive` is the name for setting all three that way; it is a bundle of
+settings like `live` and `safe`, not a fourth mechanism.
+
+This reverses what this document said for most of the build, which was that
+the choice must be explicit and never inferred from the destination list,
+on the grounds that adding a destination would then silently change whether
+the child saw a terminal. That objection is real, and the rule below
+answers it. What killed the explicit flag is that it contradicted the ports
+it claimed to describe. `sh.interactive.input("data")` says two
+irreconcilable things about one descriptor — hand the child the terminal,
+*and* write this text to its stdin — and it did not fail: it hung, because
+the flag took fd 0 and the text had nowhere to go. A flag that overrides the
+ports means two keys aim at the same port, which is the mistake that
+produced most of the churn in this design.
+
+Reading it off the port cannot express that contradiction. `input:
+process.stdin` is the terminal, `input: "data"` is the text, `input:
+[process.stdin, true]` is a pipe because a transcript can only be made of
+bytes that pass through this process — every one of those is a single
+unambiguous answer, and the surprise the old objection worried about is
+exactly what the last of them makes visible. Adding a destination *does*
+change the descriptor, and it must: it is a request for bytes this process
+can only have if they come through it. So the rule is stated where a caller
+meets it, in the README and in the `interactive` entry, rather than being
+prevented by a flag that produces hangs.
 
 Colour then needs no option at all. A child decides whether to emit colour by
 asking `isatty`, so it emits colour under `interactive`, where it has a real
@@ -250,6 +275,21 @@ later one, and shipping only one would be an arbitrary asymmetry.
 They are deliberately the only two. Filtering, counting, and matching are
 application-specific and belong in the caller's own writable, which is what
 the port model already accepts.
+
+Both are built and exported. A size is a number of bytes or a string whose
+unit is visible at the call site — `"512B"`, `"64kB"`, `"8MiB"`. Both unit
+families are accepted rather than one guessed at, because `kB` and `KiB`
+differ and only the caller knows which they meant; a string without a unit
+is an error for the same reason a duration without one is. `Infinity` is
+refused with a message naming `true` on the port, since keeping everything
+is that key's job and two ways to say it is the mistake this whole model
+exists to avoid.
+
+The multi-byte edge is handled where the text is read, not where the bytes
+are dropped: a cut is trimmed forward past continuation bytes for `tail` and
+back to the last complete character for `head`, so the result is one
+character shorter rather than one character broken. Nothing is trimmed when
+nothing was dropped.
 
 ### Smaller decisions
 
@@ -425,6 +465,32 @@ handed one to be distinguishable. Row 12 is the only row needing a tap on
 input, and row 14 the only row needing ordered sources; both are cheap to
 drop if a design can only buy them at a high price, and that trade should be
 made explicitly rather than by forgetting they exist.
+
+**All fourteen were run against the built library**, rather than assumed
+from the design that produced them. Twelve behave as written. The two that
+do not are worth stating plainly:
+
+- **Row 13 — drive a REPL** works, but only through a stream the caller
+  supplies: `sh({ input: keyboard })` and then writing to `keyboard` as the
+  command runs. Writing to `proc.input` *after* the command started did not
+  work and said nothing, which is the defect described under "writing to a
+  port that has nothing connected" below. Writing before `start()` always
+  worked, so the two spellings differed only in line order and only one of
+  them did anything.
+- **Rows 12 and 14 are served on their byte ordering and not on their
+  terminal.** `input: [process.stdin, true]` records the session and
+  `input: ["text\n", process.stdin]` feeds text and then the human, both
+  correctly — but a port with a second connection must pipe, so the child
+  does not believe it is on a terminal. That is the unavoidable trade
+  above, not an oversight, and issue #36 is the only thing that removes it.
+
+**Writing to a port that has nothing connected fails at the write.** It used
+to vanish: the port closes the child's stdin immediately so that `sh`sort``
+finishes, and the `write after end` that followed was swallowed by the
+handler that exists to absorb EPIPE when a command exits without reading.
+The one principle this design will not bend on is that a mistake surfaces
+where it was made, so the write throws and the message names both supported
+spellings.
 
 ### A `Process` is a source of its own output
 
