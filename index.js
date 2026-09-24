@@ -248,11 +248,22 @@ function withTruncation(result, truncated) {
 }
 
 // Asynchronous execution
-function objectToCLIFlags(obj) {
+
+/**
+ * The same flags as separate arguments, unquoted.
+ *
+ * `cmd` hands its arguments to the child directly, so there is no shell to
+ * quote for. Quoting anyway would put the quote characters into the value:
+ * `{ out: "d i r" }` became the three arguments `--out="d`, `i`, `r"`,
+ * which happened to print correctly and was wrong.
+ */
+function objectToCLIFlagList(obj) {
   return toFlagDescriptors(obj)
     .filter(shouldIncludeFlag)
-    .map(formatFlag)
-    .join(" ");
+    .map(({ name, value }) => {
+      const flag = formatFlagName(name);
+      return value === true ? flag : `${flag}=${String(value)}`;
+    });
 }
 
 function objectToShellSafeFlags(obj) {
@@ -335,8 +346,6 @@ function formatFlagName(key) {
   return `${dashes}${name}`;
 }
 
-
-
 function oneLine(strings, ...values) {
   return strings
     .reduce((result, string, index) => {
@@ -354,24 +363,17 @@ function arrayToShellArgs(arr) {
     .join(" ");
 }
 
-function arrayToCommandArgs(arr) {
-  return arr
-    .filter(hasValue)
-    .map(item => String(item))
-    .join(" ");
-}
-
 function hasValue(item) {
   return item !== null && item !== undefined;
 }
 
-
 // Core execution function
 function executeCommand(strings, values, useShell, isSync, options = {}) {
-  const command = useShell 
+  // `cmd` gets an argument list, not a string to be split apart again.
+  const command = useShell
     ? buildShellExpression(strings, values)
-    : buildCommandString(strings, values);
-    
+    : buildCommandArgs(strings, values);
+
   // Execute the command based on sync/async and shell mode
   return runCommand(command, useShell, isSync, options);
 }
@@ -478,41 +480,67 @@ function templateEscape(str, context = { type: "unquoted" }) {
   return str;
 }
 
-function buildCommandString(strings, values) {
-  // Raw, for the same reason as buildShellExpression: escape sequences in
-  // the template belong to the command, not to JavaScript.
+/**
+ * Builds the argument list for `cmd` directly, so interpolated values are
+ * never tokenized.
+ *
+ * `cmd` used to build a command string and then split it back apart, which
+ * meant every value made a round trip through a parser that strips quotes
+ * and splits on whitespace. A filename like `it's.txt` came out as
+ * `its.txt`, and `say "hi"` came out as `sayhi` — silently, in the tag
+ * whose whole purpose is not to hand text to something that interprets it.
+ *
+ * The literal parts of the template still have to be parsed, because they
+ * carry the quoting a caller wrote themselves. So they are parsed with each
+ * value replaced by a placeholder, and the placeholders are swapped back
+ * afterwards. Whatever the parser does to the template, it never sees a
+ * value.
+ */
+function buildCommandArgs(strings, values) {
   const parts = strings.raw ?? strings;
-  let command = "";
+  // Per call, so a value cannot contain something that looks like one.
+  const mark = ` ${Math.random().toString(36).slice(2)} `;
+  const slots = [];
+  const hold = (value) => `${mark}${slots.push(String(value)) - 1}${mark}`;
+
+  let templated = "";
   for (let i = 0; i < parts.length; i++) {
-    command += parts[i];
-    if (i < values.length) {
-      const valueStr = valueToCommandString(values[i]);
-      command += valueStr;
+    templated += parts[i];
+    if (i >= values.length) continue;
+    const value = values[i];
+
+    if (Array.isArray(value)) {
+      // Each element is its own argument, so they are separated here
+      // rather than left to the parser.
+      templated += value.map((item) => ` ${hold(item)} `).join("");
+    } else if (isSafeString(value)) {
+      templated += hold(value);
+    } else if (value && typeof value === "object") {
+      templated += objectToCLIFlagList(value)
+        .map((flag) => ` ${hold(flag)} `)
+        .join("");
+    } else {
+      // Glued to whatever surrounds it, so `--flag=${value}` stays one
+      // argument.
+      templated += hold(value);
     }
   }
-  return command;
-}
 
-function valueToCommandString(value) {
-  // Same ordering as valueToShellString: a marked string is a String
-  // object and would otherwise be read as a bag of flags.
-  if (isSafeString(value)) {
-    return String(value);
-  } else if (value && typeof value === "object" && !Array.isArray(value)) {
-    return objectToCLIFlags(value);
-  } else if (Array.isArray(value)) {
-    return arrayToCommandArgs(value);
-  } else {
-    return String(value);
-  }
+  return parseCommand(templated.trim()).map((token) =>
+    token
+      .split(mark)
+      .map((piece, index) => (index % 2 === 1 ? slots[Number(piece)] : piece))
+      .join(""),
+  );
 }
 
 function runCommand(command, useShell, isSync, options) {
-  // Trim whitespace
-  command = command.trim();
-  
+  // `cmd` arrives as an argument list; `sh` as a string to hand a shell.
+  const isArgv = Array.isArray(command);
+  command = isArgv ? command.filter((part) => part !== "") : command.trim();
+
   // Handle empty commands
-  if (!command) {
+  if (isArgv ? command.length === 0 : !command) {
     const error = new ProcessError({
       message: "Command cannot be empty",
       code: "EMPTY_COMMAND",
@@ -560,9 +588,9 @@ function runCommand(command, useShell, isSync, options) {
     args = [];
     spawnOptions.shell = resolveShell(options.shell);
   } else {
-    // Parse command for direct execution
-    // Simple parsing that handles basic quoted arguments
-    const parts = parseCommand(command.trim());
+    // Already an argument list when it came from `cmd`; a string only when
+    // a caller handed one in directly.
+    const parts = isArgv ? command : parseCommand(command.trim());
     cmd = parts[0];
     args = parts.slice(1);
     spawnOptions.shell = false;
@@ -1530,7 +1558,7 @@ class Pipeline {
     if (isTemplateTagInvocation(args)) {
       const [strings, ...values] = args;
       const command = inherited.shell === false
-        ? buildCommandString(strings, values)
+        ? buildCommandArgs(strings, values)
         : buildShellExpression(strings, values);
       next = new Process(command, inherited);
     } else if (Array.isArray(args[0])) {

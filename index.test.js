@@ -3550,3 +3550,64 @@ test("a backslash inside an interpolated value is still escaped", async () => {
   const expected = { sh: "a\\b", cmd: "a\\b" };
   assert.deepEqual(actual, expected);
 });
+
+// --- cmd hands values to the child untouched -------------------------------
+
+test("cmd delivers a value exactly as it was given", async () => {
+  // cmd built a command string and then split it back apart, so every
+  // value made a round trip through a parser that strips quotes and
+  // splits on whitespace. A filename like it's.txt became its.txt,
+  // silently, in the tag chosen precisely for not interpreting things.
+  const values = [
+    'say "hi"',
+    "it's fine",
+    'path "with" quotes',
+    "a  b",
+    '--flag="x y"',
+    "; rm -rf /",
+    "$(echo pwned)",
+  ];
+
+  const actual = [];
+  for (const value of values) {
+    actual.push((await cmd`printf '%s' ${value}`).output);
+  }
+  const expected = values;
+  assert.deepEqual(actual, expected);
+});
+
+test("cmd keeps argument boundaries, not just the printed text", async () => {
+  // Printing can look right while the boundaries are wrong: an object
+  // whose value held spaces produced --out="d, i, and r" as three
+  // arguments, which echoed identically to the one argument intended.
+  // Printing each argument on its own line shows the difference.
+  const lines = async (fn) =>
+    (await fn()).output.split("\n").filter(Boolean);
+
+  const actual = {
+    object: await lines(() =>
+      cmd`printf '%s\n' ${{ verbose: true, out: "d i r" }}`),
+    array: await lines(() => cmd`printf '%s\n' ${["one", "two three"]}`),
+    glued: await lines(() => cmd`printf '%s\n' --name=${"a b"}`),
+    quotedLiteral: await lines(() => cmd`printf '%s\n' "Hello World"`),
+  };
+  const expected = {
+    object: ["--verbose", "--out=d i r"],
+    array: ["one", "two three"],
+    glued: ["--name=a b"],
+    quotedLiteral: ["Hello World"],
+  };
+  assert.deepEqual(actual, expected);
+});
+
+test("a value cannot smuggle in an argument boundary", async () => {
+  // The placeholders that keep values away from the parser are generated
+  // per call, so a value containing something that looks like one cannot
+  // split itself into two arguments.
+  const sneaky = "a 0 b";
+  const actual = (await cmd`printf '%s\n' ${sneaky}`).output
+    .split("\n")
+    .filter(Boolean);
+  const expected = ["a 0 b"];
+  assert.deepEqual(actual, expected);
+});
