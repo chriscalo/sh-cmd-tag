@@ -7,10 +7,16 @@ For what the library is, read [README.md](README.md). For how code should
 look, read [STYLE.md](STYLE.md). For how it is designed, read the design
 documents under `design/`.
 
+**Work in flight.** While the 1.0 branch is open, what has been decided, what
+is left, and the reasoning behind both live in task #42 — whose subject says
+to read it first — and in the state-of-play comment on PR #34. Task
+descriptions are not shown by default, so that one has to be fetched
+deliberately. Start there rather than inferring the state from the diff.
+
 ## Commands
 
 ```sh
-npm test          # the whole suite, ~1.8s
+npm test               # the whole suite, ~12s
 npm run test:verbose   # same, with debug output
 ```
 
