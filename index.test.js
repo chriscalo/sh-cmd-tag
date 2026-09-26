@@ -1843,7 +1843,12 @@ test("cwd is honoured", async () => {
   assert.match(actual, /tmp$/);
 });
 
-test("env is merged over the parent environment", async () => {
+test("a variable supplied in env reaches the child", async () => {
+  // Named for what it checks. It used to be called "env is merged over the
+  // parent environment", which was false once env began replacing rather
+  // than extending — and the body never distinguished the two anyway, so
+  // the name asserted something the assertion could not catch. The
+  // replacing behaviour has its own test below.
   const { sh } = await import("./index.js");
   
   const actual = (await sh({ env: { CUSTOM_VAR: "custom" } })`echo $CUSTOM_VAR`)

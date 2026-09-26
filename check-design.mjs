@@ -22,11 +22,20 @@ function claimsFrom(markdown) {
   lines.forEach((line, i) => {
     const m = /^(\d+)\.\s+(.+)$/.exec(line);
     if (!m) return;
-    const anchor = /^\s+→\s+(.+?)\s*$/.exec(lines[i + 1] ?? "");
+    // A claim may wrap onto further indented lines, so the anchor is
+    // looked for across the whole entry rather than only the next line.
+    let anchor = null;
+    let text = m[2];
+    for (let j = i + 1; j < lines.length; j++) {
+      const found = /^\s+→\s+(.+?)\s*$/.exec(lines[j]);
+      if (found) { anchor = found[1]; break; }
+      if (!/^\s+\S/.test(lines[j])) break;
+      text += " " + lines[j].trim();
+    }
     claims.push({
       n: Number(m[1]),
-      claim: m[2].replace(/`/g, ""),
-      anchor: anchor ? anchor[1] : null,
+      claim: text.replace(/`/g, ""),
+      anchor,
     });
   });
   return claims;

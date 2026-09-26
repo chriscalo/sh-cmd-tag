@@ -1232,14 +1232,17 @@ issue rather than in a checklist file.
 20. A spawn failure surfaces a `ProcessError` carrying the errno string as
     its code, agreeing with `.sync`.
 21. `cwd` is honored.
-22. `env` is merged over `process.env`.
+22. `env` is the child's environment, replacing rather than extending it.
+    → env replaces the environment rather than extending it
 
 **Capture and forwarding**
 
 23. stdout is captured on the result.
 24. stderr is captured on the result.
-25. `output: false` suppresses stdout forwarding while capture continues.
-26. `debug: false` suppresses stderr forwarding while capture continues.
+25. `output: false` keeps nothing and sends it nowhere.
+    → a port takes nothing, the result, a stream, or a list
+26. `debug: false` keeps nothing and sends it nowhere.
+    → a port that was not kept reads as undefined, not empty
 
 **Iteration**
 
@@ -1280,34 +1283,33 @@ issue rather than in a checklist file.
 52. `.safe`, `.interactive`, and `.input(data)` merge config into the
     constructor, including in combination.
 53. `.sync` returns a `ProcessResult` directly and constructs no `Process`.
-54. Every pre-existing test passes unmodified.
 
 **Lifecycle control**
 
-55. `stop()` terminates politely and resolves once the process exits.
-56. `stop()` escalates to an unrefusable kill after `gracePeriod` if the
+54. `stop()` terminates politely and resolves once the process exits.
+55. `stop()` escalates to an unrefusable kill after `gracePeriod` if the
     process ignores the polite request.
-57. `stop({ gracePeriod })` overrides the escalation delay for one call.
-58. `gracePeriod: Infinity` waits without bound; `0` kills at once.
-59. `kill()` terminates immediately and unrefusably.
-60. `interrupt()` delivers the equivalent of Ctrl-C.
-61. Stopping an already-exited process is a no-op, not a throw.
-62. Stopping a pipeline stops every stage.
-63. `timeout` stops a process at the deadline and rejects a `ProcessError`
-    with `timedOut: true`, leaving `.code` as the exit code.
-64. The timeout clock starts when the process starts, not when constructed.
-65. A timed-out rejection carries the output captured before the stop.
-66. Under `throw: false`, a timeout resolves `ok: false` with
+56. `stop({ gracePeriod })` overrides the escalation delay for one call.
+57. `gracePeriod: Infinity` waits without bound; `0` kills at once.
+58. `kill()` terminates immediately and unrefusably.
+59. `interrupt()` delivers the equivalent of Ctrl-C.
+60. Stopping an already-exited process is a no-op, not a throw.
+61. Stopping a pipeline stops every stage.
+62. `timeout` stops a process at the deadline and rejects a `ProcessError`
+    with `timedOut: true`. A signal ended it, so there is no exit code.
+    → timeout stops the process and reports timedOut
+63. The timeout clock starts when the process starts, not when constructed.
+64. A timed-out rejection carries the output captured before the stop.
+65. Under `throw: false`, a timeout resolves `ok: false` with
     `.error.timedOut`.
-67. `.sync` honours `timeout`, enforcing the deadline unrefusably and setting
+66. `.sync` honours `timeout`, enforcing the deadline unrefusably and setting
     `timedOut`.
 
-**Live mode and colour**
+**Live mode**
 
-68. `.live` forwards stdout and stderr while still capturing both.
-69. `.live` does not inherit stdin.
-70. `.live` composes with the other chainables.
-71. `color: true` sets `FORCE_COLOR` in the child environment.
-72. `color: false` sets `NO_COLOR` in the child environment.
-73. `color` unset adds neither variable, and no state ever sets both.
-74. Captured output retains escape codes when colour was forced on.
+67. `.live` forwards stdout and stderr while still capturing both.
+68. `.live` does not inherit stdin.
+69. `.live` composes with the other chainables.
+70. No colour variable is ever set. A child decides for itself by asking
+    `isatty`, which is why there is no `color` option.
+    → color unset adds neither variable
