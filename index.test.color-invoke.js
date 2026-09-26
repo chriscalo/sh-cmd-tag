@@ -9,7 +9,7 @@ const emitterPath = join(__dirname, "index.test.color-emit.js");
 
 try {
   await withStdioOverrides(async () => {
-    await sh({ output: true, debug: true })`node "${emitterPath}" emit`;
+    await sh({ output: process.stdout, debug: process.stderr })`node "${emitterPath}" emit`;
   });
 } catch (error) {
   console.error("[COLOR-INVOKER] Error:", error);

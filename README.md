@@ -6,27 +6,24 @@ interpolation, and flexible I/O control.
 ## Features
 
 - **Template literal syntax** for intuitive command construction
-- **Safe interpolation** with automatic shell escaping
-- **Object/array interpolation** - objects become command flags, arrays become arguments
-- **Streaming output** - real-time command output processing  
-- **Automatic shell escaping** - protects against shell injection attacks
-- **Comprehensive error handling** with detailed ProcessError information
-- **Both sync and async** execution modes
+- **Safe interpolation** — every interpolated value is escaped, so user input
+  cannot escape its position and become part of the command
+- **Object/array interpolation** — objects become flags, arrays become
+  arguments
+- **Streaming output** — a process is a source you can iterate as it runs
+- **Pipelines** — compose processes and streams, awaiting the whole chain
+- **Process control** — stop, kill, interrupt, and timeouts
+- **Both sync and async** execution
+- **Zero dependencies**
 
 ## Installation
 
-This package is published to GitHub Packages. Create an `.npmrc` file in your project root to configure the registry:
-
-`.npmrc`:
-```
-@chriscalo:registry=https://npm.pkg.github.com
-```
-
-Then install the package:
-
 ```sh
-npm install @chriscalo/sh-cmd-tag
+npm install sh-cmd-tag
 ```
+
+Requires Node 22 or newer. macOS and Linux; Windows is not supported, because
+the escaping strategy is POSIX-specific and would not protect you there.
 
 ## Quick Start
 
@@ -40,13 +37,13 @@ import { sh, cmd } from "sh-cmd-tag";
 const result = await cmd`echo "Hello World"`;
 ```
 
-The resolved `result` object is a `ProcessResult` with information about the command execution:
+The resolved `result` is a `ProcessResult`:
 
 ```javascript
 {
   ok: true,
   output: "Hello World\n",
-  debug: ""
+  debug: "",
 }
 ```
 
@@ -56,235 +53,485 @@ The resolved `result` object is a `ProcessResult` with information about the com
 const result = await sh`echo "hello world" | wc -w`;
 ```
 
-This example uses shell pipes to count words. The resolved `result` object contains:
-
-```javascript
-{
-  ok: true,
-  output: "2\n",
-  debug: "",
-}
-```
+`sh` runs the command through a shell, so pipes, globs, and expansions work.
+`cmd` executes directly, treating those characters literally.
 
 ### Escaped interpolation of variables
 
 ```javascript
-const filename = "my file.txt";
+const filename = "file with spaces.txt";
 await sh`touch ${filename}`;
 ```
 
-This automatically escapes the filename as `'my file.txt'`. The final command that gets executed is:
+The value is escaped, so this runs `touch 'file with spaces.txt'` rather than
+creating three files. The same protection applies to hostile input:
 
-```sh
-touch 'my file.txt'
+```javascript
+const userInput = "file.txt; rm -rf /";
+await sh`cat ${userInput}`;
 ```
 
-Note: `cmd` interpolation works similarly but without shell expansion.
+That looks for a file named `file.txt; rm -rf /`. It does not delete anything.
 
 ### Object interpolation for command flags
 
 ```javascript
-const options = { regexp: "error", "ignore-case": true, quiet: false };
-await sh`grep app.log ${options}`;
+const options = { verbose: true, output: "dist" };
+await sh`build ${options}`;
 ```
 
-This becomes the following command (note that falsy values like `false` are dropped):
-
-```sh
-grep app.log --regexp=error --ignore-case
-```
-
-Note: `cmd` interpolation works the same way.
+Becomes `build --verbose --output=dist`.
 
 ### Array interpolation for multiple arguments
-
-```javascript
-const files = ["file1.txt", "file2.txt"];
-await sh`rm ${files}`;
-```
-
-This becomes the following command:
-
-```sh
-rm file1.txt file2.txt
-```
-
-Note: `cmd` interpolation works the same way.
-
-### Streaming output
-
-```javascript
-for await (const chunk of sh.stream`npm install`) {
-  process.stdout.write(chunk);
-}
-```
-
-## API Reference
-
-### `sh` - Async Command Execution with Shell Expansion
-
-```javascript
-const result = await sh`command ${arg}`;
-```
-
-Resolves to a `ProcessResult` object after command completion:
-
-```javascript
-{
-  ok: true,
-  output: "command result\n",
-  debug: "",
-}
-```
-
-### `cmd` - Async Command Execution without Shell Expansion
-
-```javascript
-const result = await cmd`command ${arg}`;
-```
-
-Resolves to a `ProcessResult` object after the command completes:
-
-```javascript
-{
-  ok: true,
-  output: "command output\n",
-  debug: "",
-}
-```
-
-### Object/Array Interpolation
-
-Objects are converted to command line flags and arrays become space-separated arguments:
-
-```javascript
-const opts = { verbose: true, output: "file.txt" };
-await sh`command ${opts}`;
-```
-
-Objects become `--key=value` pairs. This becomes the following command:
-
-```sh
-command --verbose --output=file.txt
-```
 
 ```javascript
 const files = ["a.txt", "b.txt"];
 await sh`rm ${files}`;
 ```
 
-Arrays become space-separated values. This becomes the following command:
+Becomes `rm a.txt b.txt`.
 
-```sh
-rm a.txt b.txt
-```
+## Reading output as it arrives
 
-### Streaming
-
-Real-time output processing using the `Process` class:
+A process is a source of its own output, so you can iterate it:
 
 ```javascript
-import { Process } from "sh-cmd-tag";
-
-const process = new Process("npm run build");
-process.start();
-
-for await (const chunk of process.output) {
-  console.log("Build output:", chunk.toString());
+for await (const chunk of sh`npm install`) {
+  process.stdout.write(chunk);
 }
 ```
 
-Stream chunks as they arrive during long-running operations.
+Iteration yields stdout. Use `.debug` for stderr, and note that a failure
+throws an error that already carries stderr, so you rarely need to ask:
 
-### Error Handling
+```javascript
+for await (const chunk of proc.debug) {
+  log.warn(chunk.toString());
+}
+```
 
-You can choose whether commands throw exceptions on failure or return `ProcessResult` with `.ok === false`.
+If the command fails, the loop throws when iteration ends rather than
+finishing quietly on partial output. Breaking out early stops the process
+rather than leaving it running.
 
-Throwing behavior (default):
+To echo a child's output to your own terminal instead, use `live`:
+
+```javascript
+await sh.live`npm run build`;
+```
+
+That sends stdout and stderr to your own, so you watch the build happen. It
+keeps nothing, which is what you want for something long-running.
+`interactive` hands the child the real terminal — stdin included — so
+commands that prompt, draw, or read keystrokes work properly:
+
+```javascript
+await sh.interactive`npm init`;
+```
+
+## Pipelines
+
+`pipe` accepts a command or a writable stream, and returns the pipeline so
+far:
+
+```javascript
+const result = await sh`cat access.log`.pipe`grep 500`.pipe`wc -l`;
+```
+
+Stages can be streams as well as commands, and the two mix freely:
+
+```javascript
+import { createGzip } from "node:zlib";
+import { createWriteStream } from "node:fs";
+
+await sh`cat big.txt`.pipe(createGzip()).pipe(createWriteStream("big.gz"));
+```
+
+Awaiting a pipeline waits for every stage, so when that resolves the bytes are
+on disk.
+
+**A pipeline succeeds only if every stage succeeds.** A failure anywhere
+rejects the chain, carrying which stage failed:
 
 ```javascript
 try {
-  await sh`ls /nonexistent/directory`;
+  await sh`cat missing.txt`.pipe`wc -l`;
 } catch (error) {
-  console.error(error);
+  error.stage;    // 0
+  error.command;  // "cat missing.txt"
 }
 ```
 
-The error will be an instance of `ProcessError`:
+Without that rule the chain would report `wc`'s cheerful `0` and hide the
+missing file. Note that this governs pipelines *this library* composes. A pipe
+written inside a single command string — `` sh`cat missing.txt | wc -l` `` — is
+shell code, and its exit status is the shell's to define.
+
+## Controlling a running process
 
 ```javascript
-{
-  name: "ProcessError",
-  message: "Command failed with exit code 2: /bin/sh: 1: ls: cannot access '/nonexistent/directory': No such file or directory",
-  code: 2,
-  output: "",
-  debug: "/bin/sh: 1: ls: cannot access '/nonexistent/directory': No such file or directory\n",
+const server = sh.live`npm run dev`;
+
+await server.stop();       // ask it to exit, force it if it refuses
+await server.kill();       // immediate, cannot be refused
+await server.interrupt();  // the equivalent of Ctrl-C
+```
+
+`stop` sends a polite termination and escalates to an unrefusable kill after
+`gracePeriod`, which defaults to 5 seconds. A process that needs longer can
+have it:
+
+```javascript
+await database.stop({ gracePeriod: "30s" });
+await database.stop({ gracePeriod: Infinity });  // wait as long as it takes
+```
+
+Signals reach the whole process group, so stopping a shell command stops what
+that shell started.
+
+### Timeouts
+
+```javascript
+await sh({ timeout: "30s" })`npm test`;
+```
+
+At the deadline the process is stopped, escalating the same way, and the
+rejection carries `timedOut: true` along with whatever output arrived first:
+
+```javascript
+try {
+  await sh({ timeout: "30s" })`npm test`;
+} catch (error) {
+  error.timedOut;  // true
+  error.output;    // what the command managed to print
 }
 ```
 
-Non-throwing behavior with `.safe`:
+Durations are milliseconds as a number, or a string with a unit — `"500ms"`,
+`"30s"`, `"5m"`, `"1.5h"`. A string without a unit is an error rather than a
+guess.
+
+### Cancellation
+
+A process accepts an `AbortSignal`, so it composes with anything else that
+speaks that protocol:
 
 ```javascript
-const result = await sh.safe`ls /nonexistent/directory`;
+const signal = AbortSignal.any([request.signal, AbortSignal.timeout(30_000)]);
+
+const svg = await fetch(url, { signal });
+const png = await sh({ signal })`convert - out.png`;
 ```
 
-The command that gets executed is:
+Aborting kills the process, because `abort` means now, and the rejection
+carries `aborted: true` so a cancelled command is distinguishable from a
+failed one.
 
-```sh
-ls /nonexistent/directory
-```
+`sync` honours an abort raised before the call and refuses to run the
+command. One arriving during the call cannot be seen, because nothing can be
+seen during a blocking call — the same bargain `timeout` strikes there.
 
-The `result` variable contains information about the failed command execution:
+Note that `AbortSignal.timeout` is Node's, and takes milliseconds as a
+number. The duration strings above are this library's, and are understood by
+`timeout` and `gracePeriod` — not by anything outside it.
+
+## Deferred execution
 
 ```javascript
-{
-  ok: false,
-  output: "",
-  debug: "/bin/sh: 1: ls: cannot access '/nonexistent/directory': No such file or directory\n",
-  error: {
-    name: "ProcessError",
-    message: "Command failed with exit code 1: /bin/sh: 1: ls: cannot access '/nonexistent/directory': No such file or directory",
-    code: 1,
-    output: "",
-    debug: "/bin/sh: 1: ls: cannot access '/nonexistent/directory': No such file or directory\n",
-  },
+const proc = sh({ immediate: false })`long-running-job`;
+
+proc.output.on("data", onChunk);   // attach before anything runs
+proc.start();
+await proc;
+```
+
+The `output`, `debug`, and `input` streams exist from construction and stay
+the same objects once the process starts, so handlers and pipes set up
+beforehand receive what follows. Input written before the start is buffered
+and flushes when the process begins. `start()` is safe to call more than once.
+
+## Driving a command as it runs
+
+To write to a command while reading what it writes back — a REPL, a database
+shell, anything conversational — give the input port a stream you hold:
+
+```javascript
+import { PassThrough } from "node:stream";
+
+const keyboard = new PassThrough();
+const repl = sh({ input: keyboard })`bc`;
+
+keyboard.write("1 + 1\n");
+
+for await (const chunk of repl) {
+  console.log(String(chunk).trim());   // "2"
+  keyboard.end();
 }
 ```
 
-## Shell Escaping
+The port stays open for as long as that stream does, so the conversation can
+go both ways for as long as you need.
 
-All interpolated values are automatically escaped to protect against shell injection:
+Writing to `proc.input` works too, but only *before* `start()`, where the
+buffered bytes become the connection. A command with nothing connected to
+its input closes stdin as soon as it starts — that is what lets `` sh`sort` ``
+finish instead of waiting forever — so writing to `proc.input` afterwards
+throws rather than quietly going nowhere.
 
-```javascript
-const userInput = "file with spaces; echo gotcha";
-await sh`cat ${userInput}`;
-```
+## Error handling
 
-This safely becomes the following command:
-
-```sh
-cat 'file with spaces; echo gotcha'
-```
-
-Use `markSafeString()` only for trusted input:
+Commands throw on a non-zero exit by default:
 
 ```javascript
-import { markSafeString } from "sh-cmd-tag";
-
-const safeArgs = markSafeString("-la --color=auto");
-await sh`ls ${safeArgs} /home/user`;
+try {
+  await sh`ls /nonexistent`;
+} catch (error) {
+  error.name;    // "ProcessError"
+  error.code;    // exit code
+  error.output;  // stdout, when the port kept it
+  error.debug;   // stderr, when the port kept it
+}
 ```
 
-No escaping applied to marked safe strings. This becomes:
+### Why it ended
 
-```sh
-ls -la --color=auto /home/user
+An exit code is only one of the answers. A command a signal ended never
+picked one, so `code` is `undefined` and `signal` names what ended it — and
+three flags say whose doing it was:
+
+```javascript
+error.signal;    // "SIGTERM" — a signal ended it, so there is no exit code
+error.timedOut;  // true when `timeout` did it
+error.aborted;   // true when an `AbortSignal` did it
 ```
+
+`timedOut` and `aborted` are never both set. Stopping is not instantaneous
+— it terminates politely and escalates — so a deadline and an abort can both
+arrive before the command is gone, and only the one that *began* the
+shutdown is reported. Otherwise the order you check them in would decide the
+answer.
+
+`code` is the exit code the command chose, the platform's errno string when
+the spawn itself failed — `"ENOENT"` for a command that does not exist — and
+`undefined` when a signal ended it before it could choose one. `sync` reports
+all of it identically.
+
+Without these a cancelled command, a timed-out one, and a crashed one all
+look alike — which matters most in exactly the case cancellation is for:
+
+```javascript
+try {
+  await sh({ signal })`convert - out.png`;
+} catch (error) {
+  if (error.aborted) return;        // the caller went away; not a problem
+  if (error.timedOut) return retry();
+  throw error;                      // a real failure
+}
+```
+
+Use `safe` when a non-zero exit is an answer rather than a failure:
+
+```javascript
+const result = await sh.safe`grep TODO src/index.js`;
+
+if (result.ok) {
+  console.log(result.output);
+} else {
+  console.log("no matches");
+}
+```
+
+Or substitute a value, since a process is a thenable:
+
+```javascript
+const branch = await sh`git branch --show-current`.catch(() => "unknown");
+```
+
+## Configuration
+
+Any of these can be passed to `sh({ ... })` or `cmd({ ... })`:
+
+| Option        | Default | Meaning                                          |
+| ------------- | ------- | ------------------------------------------------ |
+| `output`      | `true`  | Where stdout goes — see [Where the bytes go](#where-the-bytes-go) |
+| `debug`       | `true`  | Where stderr goes                                |
+| `input`       | `false` | Where stdin comes from                           |
+| `immediate`   | `true`  | Start on construction rather than on `start()`   |
+| `shell`       | `true`  | `true` picks a shell for you; a string names one |
+| `throw`       | `true`  | Reject on failure, or resolve with `.error`      |
+| `timeout`     | —       | Stop the process after this long                 |
+| `gracePeriod` | `5000`  | Wait before escalating a stop to a kill          |
+| `signal`      | —       | An `AbortSignal`; aborting kills the process     |
+| `env`         | —       | The child's environment, replacing yours         |
+| `cwd`         | —       | Working directory                                |
+
+There is no `color` option, and no size or retention option; both are
+explained below.
+
+### Choosing a shell
+
+By default the library picks one — `bash` where available — so the same
+command behaves the same way on macOS and Linux rather than depending on
+whatever `/bin/sh` is on the host. That is a default, not a restriction:
+
+```javascript
+await sh({ shell: "/bin/dash" })`echo $0`;
+await sh({ shell: "zsh" })`setopt extended_glob; echo *`;
+```
+
+Chainable shorthands compose in any order: `safe`, `live`, `interactive`,
+`sync`, and `input(data)`.
+
+```javascript
+await sh.safe.live`npm test`;
+await cmd.sync.safe`which node`;
+await sh.input("hello")`wc -w`;
+```
+
+### Colour
+
+There is no colour option, because there is nothing to configure. A command
+decides whether to emit colour by asking whether its output is a terminal.
+
+`interactive` hands the child the real terminal, so it sees one and prints in
+colour, exactly as it would if you had typed the command yourself. Every
+other mode routes the bytes through your program so you can read them, and
+the child sees a pipe and prints plainly — which is usually what you want,
+since that text is about to be parsed.
+
+You cannot have both for one command: keeping a copy means the bytes must
+pass through your program, and a child talking to a pipe knows it. That is
+how the two mechanisms work rather than a choice this library made. Issue #36
+proposes a pseudo-terminal, which would make both possible at once.
+
+## Where the bytes go
+
+Each of `input`, `output`, and `debug` names a port, and its value says what
+that port is connected to.
+
+```javascript
+output: true                                  // keep it, read it off the result
+output: false                                 // nothing
+output: process.stdout                        // show it as it happens
+output: createWriteStream("build.log")        // write it there
+output: [process.stdout, true]                // show it and keep it
+
+input:  false                                 // no input (the default)
+input:  "banana\napple\n"                     // that text
+input:  process.stdin                         // the human types
+input:  createReadStream("big.csv")           // that file
+input:  [".mode json\n", process.stdin]       // in order: text, then the human
+input:  [process.stdin, true]                 // and keep a transcript
+```
+
+`true` means the same thing on every port: **put it in the result.** A list
+means several connections — read in order on `input`, since sources follow
+one another, and fanned out on `output` and `debug`, where every destination
+receives every byte.
+
+The defaults are `output: true`, `debug: true`, `input: false`: a command is
+kept but not shown, and gets no input. That last one matters, because it is
+why a command that reads stdin finishes rather than waiting forever for bytes
+that cannot arrive:
+
+```javascript
+await sh`sort`;              // finishes immediately; nothing was offered
+```
+
+**A port that was not kept reads as `undefined`, not `""`** — so "I never
+asked for this" is distinguishable from "I asked, and it printed nothing",
+and a mistake surfaces on the line that holds it rather than flowing onward:
+
+```javascript
+(await sh.live`npm run dev`).output;  // undefined — shown, not kept
+(await sh`true`).output;              // ""        — kept, printed nothing
+```
+
+Anything unusual is a stream you supply, because that is what streams are
+for — filtering to matching lines, counting without storing, forwarding
+somewhere else:
+
+```javascript
+await sh({ output: [process.stdout, myTransform] })`./noisy.sh`;
+```
+
+Nothing is dropped and there is no size setting, so a string you get back is
+all of it. The one hard edge is that a JavaScript string cannot hold more
+than about 512MB; a command producing more fails with an error naming the
+command and the remedies, rather than handing you something that looks
+complete and is not.
+
+### Keeping part of a long log: `head` and `tail`
+
+Two bounded writables ship with the library, because they are the ones you
+would otherwise write yourself and get subtly wrong:
+
+```javascript
+import { sh, tail } from "sh-cmd-tag";
+
+const log = tail("64kB");
+await sh({ output: [process.stdout, log] })`make -j8`;
+
+report(log.text);
+```
+
+`tail(size)` keeps the last bytes and `head(size)` the first — one for a
+build that died at the end, the other for a compiler whose first error
+caused every later one. Each is an ordinary writable, so a port takes it
+like any other destination, and `text` is what it kept.
+
+They ship because trimming a byte buffer to a limit cuts multi-byte
+characters in half. A hand-rolled version works on ASCII and then corrupts
+the first accented word or emoji in a build log; these stop at a character
+boundary instead, so you get one character fewer rather than a broken one.
+That is the whole difference, and it is invisible until it bites.
+
+A size is a number of bytes, or a string whose unit is visible at the call
+site — `"512B"`, `"64kB"`, `"8MiB"`. `kB`, `MB`, and `GB` count in
+thousands; `KiB`, `MiB`, and `GiB` in units of 1024. A string without a unit
+is an error rather than a guess, and so is `Infinity`, since keeping
+everything is what `true` on the port already does.
+
+They are deliberately the only two. Filtering, counting, and matching are
+application-specific, and the port already accepts a writable of your own.
+
+### Shortcuts are just settings
+
+`live`, `interactive`, `safe`, and `sync` bundle settings together, and your
+own configuration wins over the bundle:
+
+```javascript
+await sh.live({ output: true })`shown-and-kept-after-all`;
+await sh.safe({ throw: true })`throw-after-all`;
+```
+
+## Synchronous execution
+
+```javascript
+const result = sh.sync`pwd`;
+```
+
+`sync` returns a `ProcessResult` directly rather than a process, because a
+synchronous call cannot be awaited. It honours `timeout`, enforcing the
+deadline with an immediate kill — a blocking call has no moment in which to
+wait politely first.
+
+## Not in scope
+
+- **Browsers.** Node only.
+- **Windows.** The escaping is POSIX-specific.
+- **A shell implementation.** System shells parse the commands; this library
+  builds them safely.
+- **Process monitoring or supervision.** Start, stop, and observe processes,
+  but this is not a service manager.
+- **Remote execution.** No SSH, no transports.
 
 ## Testing
-
-To run tests:
 
 ```sh
 npm test
 ```
+
+## License
+
+MIT

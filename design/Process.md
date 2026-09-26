@@ -1,0 +1,1315 @@
+# Process Class Design
+
+## Status
+
+This document is the single authority for `Process`. Where it previously
+contradicted itself or `Process.tasks.md`, those contradictions are resolved
+here and the rationale is recorded, so a later reader can tell a decision from
+an accident.
+
+`Process` is not an optional advanced interface bolted beside the template
+tags. It **is** the library's asynchronous execution engine: `sh` and `cmd`
+build a command string and return a `Process`. There is one engine, not two.
+
+Platform support is POSIX — macOS and Linux. Windows is out of scope; see
+[Shell selection and platform](#shell-selection-and-platform). The supported
+runtime floor is **Node 22**, the oldest line still in active maintenance;
+Node 18 reached end of life in April 2025 and testing an unpatched runtime
+sits badly with a security-sensitive library.
+
+`1.0.0` is a semver commitment: the surface described here stays compatible
+until a major bump. That is why the questionable parts are being settled now
+rather than shipped and regretted.
+
+## Why this class exists
+
+Before it, `sh` and `cmd` executed commands through inline promise-and-stream
+logic (`executeAsyncCommand()`), which meant a caller could only ever have the
+finished result. Anything else a caller might reasonably want — watching output
+as it arrives, writing to stdin, deciding when to start, composing commands
+into a pipeline, or asking what command is actually running — had nowhere to
+live.
+
+`Process` gives those a home without changing what existing code sees. Every
+current call site awaits a tag and reads a `ProcessResult`; a thenable
+`Process` that resolves the same `ProcessResult` satisfies that unchanged.
+
+## Design decisions
+
+Each decision below settles a question the earlier draft left open or answered
+twice.
+
+### `start()` is idempotent and returns `this`
+
+The earlier draft said `start()` was a safe no-op when already started, while
+the task list asserted it threw. Idempotent is correct, and not as a matter of
+taste:
+
+- The class **must** ensure-start internally, because both `then()` and
+  `pipe()` start a deferred process on demand. That primitive exists either
+  way. If the public `start()` throws instead, one operation has two
+  semantics.
+- "Already started" is the normal state, not a caller error. `immediate: true`
+  is the default and awaiting auto-starts, so a throwing `start()` forces
+  every caller holding a possibly-started process to write
+  `if (!proc.started) proc.start()` — which is the idempotent version,
+  hand-rolled at each call site.
+
+`start()` returns `this`, so it chains.
+
+### The exposed streams are created in the constructor and never null
+
+The earlier draft said both that stream getters "return `null` if child
+process not available" and that streams are "created in the constructor and
+remain stable." The second is correct; the first described the stub
+implementation rather than the design.
+
+Deferred start exists precisely so a caller can attach handlers and pipes
+*before* anything runs. Null getters would make the only reason for the
+feature impossible, and would force null checks on streams that are certain to
+exist. So:
+
+- `output`, `debug`, and `input` are `PassThrough` streams built in the
+  constructor.
+- They are identity-stable: the object a caller holds before `start()` is the
+  object that carries data after it.
+- `start()` spawns the child and bridges its stdio into those existing
+  streams. It does not replace them.
+
+Input written before start sits in the `PassThrough` buffer and flushes when
+the pipe to `child.stdin` opens. Output and debug stay silent until a child
+exists, because nothing writes into them until then.
+
+### Why this library exists, given execa
+
+Answered by running execa 10 rather than reading about it, because an earlier
+answer to the same question was given from its documentation and was wrong.
+
+execa's template tag escapes safely — strings, numbers, arrays, and even
+another command's result all interpolate without injection. It manages that
+by refusing to use a shell: arguments go to the child as an argv array, so
+there is no shell to be injected into. Turn one on and the guarantee is
+gone:
+
+    await execa({shell: true})`echo ${"x; echo PWNED"}`   // -> "x\nPWNED"
+    await execa({shell: true})`echo ${"$(echo OWNED)"}`   // -> "OWNED"
+
+Both ran. So the moment a caller wants a pipe, a glob, or a redirection —
+the reason `sh` exists at all — execa offers no protection, and this
+library's escaping layer is the thing that does. That is a security
+property, not sugar, and it is the half of this code that would be kept
+under any plan.
+
+On features the two are at parity, with complementary gaps. Each covers ten
+of the fourteen use cases below. This library bounds a capture from the end
+and cannot yet bound from the front; execa bounds from the front and cannot
+bound from the end, and does it by killing the subprocess, so "too noisy" is
+reported as "failed". Neither records stdin. Neither concatenates input
+sources in order — execa's array looks like concatenation but merges
+concurrently, which a slow source followed by a fast one demonstrates. execa
+passes real file descriptors and so gives a child a true terminal, which
+this library does not do and must.
+
+Wrapping execa was considered and rejected. It would trade one set of gaps
+for another, add twelve transitive dependencies to a package whose purpose
+is not running what the caller did not intend, and require an adapter plus
+re-basing pipelines. The decisive objection is that it would not remove the
+design work: a wrapper still needs its own configuration surface, unless it
+forwards execa's options untouched, in which case the API is not this
+library's at all. The escape hatch stays open — the escaping layer is what
+a thin wrapper would keep, so bailing later stays cheap.
+
+### The stdio model
+
+Each of `input`, `output`, and `debug` names a port, and the port's value says
+what it is connected to. One connection is written on its own; several are
+written as a list.
+
+| value | means |
+| --- | --- |
+| `false` | nothing |
+| `true` | put it in the result |
+| a stream | that stream: readable on `input`, writable on `output` |
+| a string, on `input` only | that literal text |
+
+`true` means the same thing on every port, so `result.input` holds what was
+sent just as `result.output` holds what came back. A list is **ordered** on
+`input` and **fans out** on `output` and `debug` — the only reading of each
+that is not nonsense, since concatenating writers and fanning out ordered
+readers are both meaningless.
+
+Defaults are `{ input: false, output: true, debug: true }`. A command is kept
+but not shown, and gets no input — which is what stops a command that reads
+stdin from waiting forever for bytes that cannot arrive.
+
+Anything unusual is a stream the caller supplies, because that is what streams
+are for. Keeping only the last part of a log, filtering to matching lines,
+counting without storing — each is a writable of a few lines, and none of them
+needs a configuration vocabulary.
+
+### Real terminals, and why colour needs no option
+
+A child either receives the real file descriptors or receives pipes, and the
+two are mutually exclusive. With `stdio: ["ignore", "inherit", "pipe"]` Node
+reports `child.stdout === null`: there is no pipe, so there is nothing to
+read. Handing over the terminal means the bytes never pass through this
+process at all.
+
+So `interactive` hands over the real descriptors and its output is
+deliberately unobservable, and every other mode pipes, so iteration,
+pipelines, and `result.output` always work.
+
+**The choice is read off the port, one port at a time.** A port gets the real
+descriptor when the parent's own stream is its *only* connection — `input:
+process.stdin`, `output: process.stdout` — and a pipe in every other case.
+`interactive` is the name for setting all three that way; it is a bundle of
+settings like `live` and `safe`, not a fourth mechanism.
+
+This reverses what this document said for most of the build, which was that
+the choice must be explicit and never inferred from the destination list,
+on the grounds that adding a destination would then silently change whether
+the child saw a terminal. That objection is real, and the rule below
+answers it. What killed the explicit flag is that it contradicted the ports
+it claimed to describe. `sh.interactive.input("data")` says two
+irreconcilable things about one descriptor — hand the child the terminal,
+*and* write this text to its stdin — and it did not fail: it hung, because
+the flag took fd 0 and the text had nowhere to go. A flag that overrides the
+ports means two keys aim at the same port, which is the mistake that
+produced most of the churn in this design.
+
+Reading it off the port cannot express that contradiction. `input:
+process.stdin` is the terminal, `input: "data"` is the text, `input:
+[process.stdin, true]` is a pipe because a transcript can only be made of
+bytes that pass through this process — every one of those is a single
+unambiguous answer, and the surprise the old objection worried about is
+exactly what the last of them makes visible. Adding a destination *does*
+change the descriptor, and it must: it is a request for bytes this process
+can only have if they come through it. So the rule is stated where a caller
+meets it, in the README and in the `interactive` entry, rather than being
+prevented by a flag that produces hangs.
+
+Colour then needs no option at all. A child decides whether to emit colour by
+asking `isatty`, so it emits colour under `interactive`, where it has a real
+terminal, and does not elsewhere, where it does not. The previous `color`
+option existed to fake that answer with `FORCE_COLOR`, which worked for
+colour and could never work for cursor movement, alternate screen buffers, or
+raw-mode keystrokes. Faking one capability and not the others is worse than
+not faking any, so the option is removed. Having both — a child that believes
+it is on a terminal and bytes this library can still read — requires a
+pseudo-terminal, which is issue #36.
+
+### The exposed streams are handles, not destinations
+
+`p.output` exists whether or not anything was configured, so `for await` and
+`pipe()` work with no configuration. That does not contradict "absence means
+absence", because the rule governs what this library connects on the caller's
+behalf, not what the caller can reach for.
+
+The asymmetry with `input` is deliberate and is the whole of the original bug.
+An unread source can be drained internally, harmlessly. An unwritten sink can
+never be closed, because "will write later" and "will never write" are the
+same observation. So output can be offered unconditionally and input cannot.
+
+### Retention is unbounded, and the ceiling is an error
+
+There is no retention setting. `true` keeps everything; anything else is a
+stream. The production failure that prompted this was unbounded accumulation
+by a process that never exits, and the answer is that such a process names its
+destinations — `{ output: process.stdout }` — and so retains nothing, rather
+than a bound nobody would have configured either.
+
+`result.output` is `undefined` when no retention was configured, not `""`.
+That distinguishes "never asked for it" from "asked, and it printed nothing",
+and it fails on the line holding the misunderstanding instead of producing an
+empty value that flows onward and fails somewhere unrelated.
+
+`truncated` is removed. The library never discards bytes by choice, so a
+returned string is all of it. The one hard limit is that a JavaScript string
+holds at most 536,870,888 characters, and crossing it is reported rather than
+clipped: silently returning a result that looks complete is the failure mode
+this whole design has been removing. Because the byte count is known as it
+accumulates, the failure happens on crossing the limit rather than when
+`toString()` raises `RangeError: Invalid string length` — so the message can
+name the command, say how far it got, and give the three remedies, which are
+a writable, iteration, or `output: false`.
+
+### Dependencies: none, unless you want a terminal
+
+The package installs nothing. The single exception is the optional
+pseudo-terminal of issue #36, which is native, compiles on install, and is
+only needed by a caller who wants a child to believe it is on a terminal
+while still reading its bytes.
+
+That constrains one decision made above. `result.output` is defined as plain
+text, so escape sequences have to be removed, and removing them correctly
+means handling far more than colour — cursor movement, alternate screen
+buffers, and OSC-8 hyperlinks are all escape sequences, and the obvious
+`\x1b\[[0-9;]*m` misses most of them. The answer is to vendor the pattern
+from `ansi-regex`, which is MIT, six lines, treats OSC and CSI separately,
+and deliberately stops an unterminated `ESC ]` from rescanning the remaining
+input. Copying a known-good pattern with attribution is not the same as
+hand-rolling one, and it keeps the install empty. The cost is that a later
+fix upstream has to be noticed and copied across.
+
+This matters little in 1.0 and a great deal after #36. Without a terminal a
+child suppresses colour itself, so almost nothing emits escape sequences
+through a pipe and stripping is close to a no-op. With a pseudo-terminal the
+child believes it is on a terminal and emits them unprompted, at which point
+every captured stream contains them.
+
+### Bounded retention ships as `head` and `tail`
+
+Retention is all or nothing, and anything else is a writable the caller
+supplies. That promise is only honest if writing one is genuinely easy, and
+it is not: trimming a byte buffer to a limit slices multi-byte characters in
+half, so a hand-rolled version works on ASCII and silently corrupts the first
+accented character or emoji in a build log. This project wrote and debugged
+exactly that code once already, while bounded capture was still an option.
+
+So `head(size)` and `tail(size)` are exported — writables that keep the first
+or last bytes and expose the result as `text`. Both, not one: they are the
+same implementation with a comparison reversed, `tail` serves a build that
+died at the end while `head` serves a compiler whose first error caused every
+later one, and shipping only one would be an arbitrary asymmetry.
+
+They are deliberately the only two. Filtering, counting, and matching are
+application-specific and belong in the caller's own writable, which is what
+the port model already accepts.
+
+Both are built and exported. A size is a number of bytes or a string whose
+unit is visible at the call site — `"512B"`, `"64kB"`, `"8MiB"`. Both unit
+families are accepted rather than one guessed at, because `kB` and `KiB`
+differ and only the caller knows which they meant; a string without a unit
+is an error for the same reason a duration without one is. `Infinity` is
+refused with a message naming `true` on the port, since keeping everything
+is that key's job and two ways to say it is the mistake this whole model
+exists to avoid.
+
+The multi-byte edge is handled where the text is read, not where the bytes
+are dropped: a cut is trimmed forward past continuation bytes for `tail` and
+back to the last complete character for `head`, so the result is one
+character shorter rather than one character broken. Nothing is trimmed when
+nothing was dropped.
+
+### Smaller decisions
+
+`sh.live` stays awaitable. The shorthand says where bytes go, not how long a
+command runs, and watching a build, a push, or a test run and then waiting
+for it is ordinary. Refusing to await would break those to catch a hang that
+any mode produces — `await sh\`npm run dev\`` hangs identically — so the
+problem is the command not ending, not the shorthand.
+
+`sh.input(data)` stays. It sets the same key the configuration object does,
+carries the richer values without special handling, and composes with the
+other chainables. The only argument against it is that no other option has a
+chainable, which is not worth breaking existing calls over.
+
+### Pipelines behave as one command
+
+`input` configures the first stage, `output` the last, and `debug` merges
+every stage — which is what a shell does with `a | b | c`. Intermediate
+wiring is internal: there is no meaning for "stage two's output" other than
+"stage three's input", so exposing it would only allow contradictions.
+Intermediate stages retain nothing, since their output is consumed
+downstream. A downstream stage has no configured input, but the connection
+was made by the pipeline rather than absent, so the EOF rule does not apply
+to it. Per-stage options still work for anything that is not a port.
+
+### Who closes stdin, and when — resolved
+
+Resolved: a port with nothing connected to it is closed, so a command that
+reads stdin receives EOF rather than waiting for bytes that cannot arrive.
+The survey and measurements below are kept because they are the evidence for
+that decision, and because the same reasoning governs why `output` can be
+offered unconditionally while `input` cannot.
+
+**What happens now.** `input` is a `PassThrough` piped to `child.stdin`. If
+nothing ends it, the child's stdin never reaches EOF. A command that reads
+stdin therefore waits forever. Measured:
+
+| case | today |
+| --- | --- |
+| command never reads stdin — `git status`, `ls` | settles |
+| command reads stdin, nothing given — `sort`, `grep TODO` | **waits forever** |
+| `input` given as a string or stream | settles |
+| written to `proc.input` and `end()` called | settles |
+| written to `proc.input`, `end()` forgotten | **waits forever** |
+| pipeline stage, fed upstream | settles |
+| `input: false` | **waits forever** — the value does nothing today |
+
+Two of those wait, and they are different mistakes: in the first nothing was
+ever written to `input`, in the second something was written and never
+closed. Neither produces any output, so from outside the program simply
+stops.
+
+**Why it happens.** Not because of the default. Because `input` exists
+unconditionally. A stream the caller may write to at any moment cannot be
+closed on their behalf, because "will write later" and "will never write"
+are the same observation at `start()`.
+
+**What other libraries do.** Measured, not recalled:
+
+| library | stdin left unspecified | can you write without declaring it? |
+| --- | --- | --- |
+| Go `exec.Cmd` | `os.DevNull` — settles | no — `StdinPipe()` or set `Stdin` |
+| Ruby `Open3.capture2` | pipe closed at once — settles | no — hands back no stream; `popen3` is a different call |
+| Python `subprocess.run` | inherits the parent's — settles under `< /dev/null` | no — `p.stdin is None` unless `stdin=PIPE` |
+| Node `child_process` | pipe left open — waits forever | yes — `child.stdin` is always there |
+| this library | pipe left open — waits forever | yes — `proc.input` is always there |
+
+The column that matters is the second one. Every library that settles by
+default also refuses to hand out a stdin stream unless asked. They are not
+two independent choices; they are one: no stream means nobody can write,
+which is what makes closing safe. Node hands out the stream and therefore
+cannot close it, and this library inherited that shape without inheriting
+the reason — Node is plumbing, where managing the pipe is the caller's job
+by construction.
+
+So the question is not "what should the default be". It is **should writing
+to stdin require saying so first.**
+
+**The options, and what each costs.**
+
+*A. Keep it as it is.* The stream is always there and the caller owns its
+lifetime, EOF included. Coherent, and familiar to anyone thinking in Node
+streams. Costs two silent hangs, one of which — forgetting a file argument —
+is a typo rather than a misunderstanding.
+
+*B. Declare to write.* `input` exists only when the caller asks for it; with
+nothing asked for, the child gets EOF. Coherent for the reason the table
+shows: no stream, so nothing to leave open. Matches Go, Ruby, and Python.
+Costs the progressive-write form on a plain tag — it would need a
+declaration — and adds a configuration value. It is a breaking change to
+documented behaviour, which is free exactly once, before publication.
+
+*C. Inherit the parent's stdin.* Python's default, and what typing the
+command into a terminal does. Rejected: `interactive` already means this,
+so it would make the plain form interactive by default, and a command
+running in the background would compete for the terminal's input.
+
+*D. Keep A, and make the two waits sayable and visible.* `input: false`
+comes to mean EOF, so "this command gets no input" is one word rather than
+the `sh.input("")` trick. The two waiting states are distinguishable from
+inside — written-to versus never-written — so they can be reported rather
+than guessed at. Additive, breaks nothing, and does not remove the wait.
+
+**How to judge them.** Least surprise, measured against what the caller
+already believes: a reader who thinks "this is a subprocess I am capturing"
+expects Go and Ruby's answer; a reader who thinks "this is a Node stream I
+hold" expects A. This library has already split those two readings — the
+terminal reading is `interactive` — which is an argument that the plain form
+should take the capture reading. Against that: whether a mistake can be
+silent, and whether the failure is the kind a caller can diagnose without
+reading the source.
+
+### The question is wider than stdin
+
+Working the above through turned up three problems that are not about stdin
+at all, and that any answer has to solve together.
+
+**`output` and `capture` are two keys for one port.** `output` is not a
+setting for stdout; it is one *destination* for stdout, sitting at the top
+level as though it were the whole port, while `capture` is a second
+destination sitting beside it. Nothing stops the two from contradicting each
+other, and a draft of this document did exactly that — `output: false` with
+`debug: true`, then reading the result's `.output` — without the shape of
+the API making the nonsense visible.
+
+**A bound is not a number.** `capture: 65536` cannot say *which* 65536. Both
+ends are ordinary: a build that dies wants the last bytes, and a compiler
+whose first error causes every later one wants the first. The current design
+silently picks the tail.
+
+**Every port needs more than one thing at once.** Not just stdout. Recording
+what a human typed into an interactive session is the terminal *and* a
+capture on stdin; priming a REPL before handing it over is text *then* the
+terminal. So "one value per port" is wrong on the input side too, and any
+design where one port's common case has a different shape from another
+port's reads badly the moment a caller configures all three.
+
+### The use cases to design against
+
+Deliberately written as requirements rather than as configuration, so that
+competing designs can be compared against the same ground instead of each
+being shown on the examples that flatter it. Every row configures all three
+ports, because real callers do.
+
+| # | real program | input | output | debug |
+| --- | --- | --- | --- | --- |
+| 1 | read a value — `git branch --show-current` | none | keep | keep |
+| 2 | run for effect — `rm -rf dist` | none | discard | discard |
+| 3 | data vs progress — `terraform show -json` | none | keep | show |
+| 4 | visible test run, analyse after — `npm test` | none | show + keep | show + keep |
+| 5 | dev server — `npm run dev` | none | show, keep nothing | show, keep nothing |
+| 6 | dying build — `make -j8` | none | show + keep **last** 64K | show + keep last 64K |
+| 7 | cascading errors — `tsc` | none | keep **first** 8K | show |
+| 8 | react as it arrives — `npm install` | none | hand me a readable | keep |
+| 9 | file through a filter — `gzip` | a readable the caller supplies | a writable the caller supplies | keep |
+| 10 | text in, value out — `sort` | literal text | keep | keep |
+| 11 | interactive CLI — `npm init` | the terminal | show | show |
+| 12 | interactive + transcript — `psql` | terminal + **record it** | show + keep | show + keep |
+| 13 | drive a REPL — `bc` | a writable the caller is given | hand me a readable | keep |
+| 14 | prime then hand over — `sqlite3` | text **then** terminal | show | show |
+
+Between them these cover every disposition without repeating one for its own
+sake. Input: none, literal text, a readable the caller supplies, the
+terminal, a writable the caller is given, an ordered pair of sources, and a
+recording tap. Output: discard, keep, keep bounded from the front, keep
+bounded from the back, show, hand back a readable, and write to a supplied
+writable. `debug` is deliberately different from `output` in rows 3, 7, and
+9, so that no design may assume it simply follows along.
+
+Rows 6 and 7 are the ones that force a bound to carry an end as well as a
+size. Rows 9 and 13 are the ones that force supplying a stream and being
+handed one to be distinguishable. Row 12 is the only row needing a tap on
+input, and row 14 the only row needing ordered sources; both are cheap to
+drop if a design can only buy them at a high price, and that trade should be
+made explicitly rather than by forgetting they exist.
+
+**All fourteen were run against the built library**, rather than assumed
+from the design that produced them. Twelve behave as written. The two that
+do not are worth stating plainly:
+
+- **Row 13 — drive a REPL** works, but only through a stream the caller
+  supplies: `sh({ input: keyboard })` and then writing to `keyboard` as the
+  command runs. Writing to `proc.input` *after* the command started did not
+  work and said nothing, which is the defect described under "writing to a
+  port that has nothing connected" below. Writing before `start()` always
+  worked, so the two spellings differed only in line order and only one of
+  them did anything.
+- **Rows 12 and 14 are served on their byte ordering and not on their
+  terminal.** `input: [process.stdin, true]` records the session and
+  `input: ["text\n", process.stdin]` feeds text and then the human, both
+  correctly — but a port with a second connection must pipe, so the child
+  does not believe it is on a terminal. That is the unavoidable trade
+  above, not an oversight, and issue #36 is the only thing that removes it.
+
+**Writing to a port that has nothing connected fails at the write.** It used
+to vanish: the port closes the child's stdin immediately so that `sh`sort``
+finishes, and the `write after end` that followed was swallowed by the
+handler that exists to absorb EPIPE when a command exits without reading.
+The one principle this design will not bend on is that a mistake surfaces
+where it was made, so the write throws and the message names both supported
+spellings.
+
+### A `Process` is a source of its own output
+
+`Process` implements `Symbol.asyncIterator`, yielding stdout chunks:
+
+```javascript
+for await (const chunk of sh`npm install`) {
+  process.stdout.write(chunk);
+}
+```
+
+This is the shortest spelling and it does the most obvious thing. stdout is
+the default because it is what a caller wants when things go well; `debug` is
+there for stderr, and a failure already throws a `ProcessError` carrying
+stderr, so the stream you want on failure arrives without being asked for.
+
+Consequences, all specified rather than incidental:
+
+- **Failure surfaces at the end of iteration.** If the command exits nonzero,
+  the loop throws the `ProcessError` when the stream ends. It does not finish
+  quietly having yielded partial output.
+- **Capture continues alongside iteration.** A later `await` still resolves a
+  complete `ProcessResult`.
+- **Abandoning the loop early does not leak.** Breaking out of a `for await`
+  must not leave the child unreaped.
+- **A consumed stream is not re-readable.** Iterating twice yields nothing the
+  second time, as with any Node stream.
+
+### An unobserved stream must not stall the child
+
+Capture happens on the child's own streams, so `output` and `debug` exist
+purely for a caller who wants to watch. If nobody does, they must not fill
+up: an unread `PassThrough` stops draining at its high-water mark and
+backpressures the child, which then blocks before exiting and never settles.
+A command printing a few megabytes would hang forever — measured at 5MB on
+either stream.
+
+So an exposed stream with no consumer is drained. The check runs on the tick
+after the process starts, so a handler attached in the same tick — the
+documented pattern for a deferred process — still counts as a reader.
+`readableFlowing === null` is what distinguishes "nothing at all is
+consuming" from both a `data` listener and an async iterator.
+
+The same rule applies to a pipeline whose last stage is a transform: nothing
+reads its output, so awaiting the chain would wait on a stream that never
+finishes.
+
+### Ending iteration is not a reason to stop a process
+
+A command may close stdout and keep working. Iteration ending means the loop
+has nothing left to yield, not that the process should die, so only
+abandonment — leaving the loop early — stops it.
+
+`Process` deliberately does **not** `extend Readable`. Inheriting Node's
+`pipe`, whose contract is to return its destination, would reintroduce the
+alternating return type that [Pipelines](#pipelines) exists to remove.
+
+### Forwarding to the parent's streams stays a config flag
+
+Iteration is for *consuming* output. Echoing a child's output to the parent's
+stdout and stderr is a separate concern, already implemented, and stays where
+it is: the `output` and `debug` flags, which are opt-in and absent from the
+defaults. `sh({ output: true })`, `sh.live`, and `sh.interactive` set them.
+
+That separation is why the iteration example above prints each chunk exactly
+once: a plain `` sh`cmd` `` captures without forwarding, so the loop body is the
+only writer.
+
+## Pipelines
+
+`pipe()` accepts a **stage** and returns **the pipeline so far**. A stage is
+either a command — template-tag or argv-array form — or any writable or
+transform stream.
+
+```javascript
+await proc.pipe`grep error`.pipe`head -5`;   // command → command
+await proc.pipe(gzip).pipe(file);            // transform → sink
+await proc.pipe(gzip).pipe`wc -c`;           // mixed
+for await (const line of proc.pipe`grep error`) { }
+```
+
+The returned handle is:
+
+- **awaitable** — settles when every stage is done: each process exited, each
+  stream finished;
+- **async-iterable** — over the last stage's output;
+- **pipeable** — continuing from the last stage.
+
+### Why the pipeline, and not the destination or the source
+
+This is the one place where following Node's convention would produce a worse
+API, so the reasoning is recorded rather than assumed. Take one line:
+
+```javascript
+proc.pipe(gzip).pipe(file)
+```
+
+**Returning the destination** (Node's `readable.pipe` contract) wires
+`stdout → gzip → file` correctly, but the value in hand is a *stream*: `await`
+on it is a no-op, and it cannot answer whether the command succeeded. Worse,
+when the stage is a command the natural return is a `Process` — so the return
+type depends on the argument type, and the meaning of the next `.pipe` in the
+chain changes with it.
+
+**Returning the source** (`this`) keeps one return type and stays awaitable,
+but breaks the dataflow: the second call becomes `proc.pipe(file)`, so stdout
+goes to gzip *and*, separately, raw to file. `file` receives uncompressed
+bytes and gzip's output goes nowhere, while the line still reads like a
+three-stage chain.
+
+**Returning the pipeline** gives one return type regardless of stage kind,
+awaitability that means "all stages finished," iteration over the tail, and a
+dataflow that matches how the line reads.
+
+### A pipeline succeeds only if every stage succeeds
+
+`ProcessResult` is already a Result type — `ok`, `error`, `output`, `debug` —
+and composing Results conjoins them. So a pipeline is `ok` only when every
+stage is, and it short-circuits on the first failure, whose error carries
+per-stage detail.
+
+```javascript
+await sh`cat missing.txt`.pipe`wc -l`;
+// rejects with cat's ProcessError
+// NOT: resolves ok with output "0"
+```
+
+This is the algebra of the type the library already has, not a convention
+borrowed from shells. `set -o pipefail` is the shell arriving at the same
+conclusion for the same reason.
+
+The escape hatches need no new API:
+
+- `.safe` resolves a failed `ProcessResult` instead of rejecting;
+- `.catch()` substitutes a fallback value, since a `Process` is thenable;
+- `pipe` accepts the same config forms the tags do, so one stage can swallow
+  while the rest do not.
+
+A mid-chain **stream** error propagates as that stage's failure rather than
+hanging the pipeline.
+
+### A finished stage closes what feeds it
+
+When a stage finishes, everything upstream is producing for nobody, so it is
+closed. Without that, `` sh`yes`.pipe`head -2` `` never ends: the producer is
+endless and nothing tells it that its consumer has gone. A shell sends
+SIGPIPE for the same reason.
+
+Those producers are closed deliberately, so they are not failures. Counting
+them would reintroduce the problem from the other side, reporting a killed
+`yes` as the reason a chain that did exactly what was asked "failed".
+
+## Shell selection and platform
+
+A high-level process API should be one API, not one per host. Node's
+`shell: true` is not that: it resolves to `/bin/sh`, which is bash in POSIX
+mode on macOS and dash on Debian, Ubuntu, and Alpine. The difference is not
+cosmetic. Measured:
+
+```sh
+$ /bin/sh -c 'set -o pipefail; echo reached'
+reached                                        # exit 0
+
+$ dash -c 'set -o pipefail; echo reached'
+dash: 1: set: Illegal option -o pipefail       # exit 2, nothing ran
+```
+
+dash does not degrade; it aborts before the command runs. So the library
+**selects its shell** — `bash` when available, `/bin/sh` otherwise — rather
+than inheriting whatever the host ships. Three consequences:
+
+1. The same command means the same thing on macOS and Linux.
+2. Pipeline failure reporting is simply on, so `` sh`cat missing.txt | wc -l` ``
+   obeys the same rule as a `pipe()` chain, with no flag for a caller to know
+   about. The rule holds at every boundary, whether the library composed the
+   pipeline or the shell did.
+3. The shell-dependent error text that the suite works around at
+   `index.test.js:74` becomes uniform.
+
+Selecting a shell is a **default, not a restriction**. This is a general
+library, and a caller who wants zsh, dash, or an interpreter at a specific
+path says so with `shell: "..."`. What the default buys is that a caller who
+expresses no preference gets the same behaviour on every supported platform
+rather than whatever the host's `/bin/sh` happens to be.
+
+The selected shell is introspectable on the process, so a caller debugging an
+environment difference can see what ran.
+
+**Windows is not supported.** This is declared in `README.md`, in
+`package.json` via the `os` field, and in `AGENTS.md`, rather than left
+implicit. The reason is not effort but correctness: `shellEscape`
+(`index.js:23-41`) quotes with POSIX single quotes, which `cmd.exe` treats as
+ordinary characters. The library's central guarantee would therefore be a
+no-op there — `` sh`echo ${"x & calc.exe"}` `` would leave `&` live as a command
+separator. Supporting Windows means a second escaping strategy plus CI on a
+Windows runner, and until that exists, claiming support would be false.
+
+## Class surface
+
+```javascript
+class Process {
+  constructor(commandString, config = {})
+
+  get command()      // string, the resolved command
+  get config()       // deep-frozen config object
+  get started()      // boolean
+  get shell()        // the selected shell, for introspection
+
+  get output()       // PassThrough, stdout
+  get debug()        // PassThrough, stderr
+  get input()        // PassThrough, stdin
+
+  start()            // idempotent, returns this
+  pipe(stage)        // returns the pipeline so far
+
+  stop(opts)         // terminate politely, escalating if ignored
+  kill()             // immediate, cannot be refused
+  interrupt()        // what Ctrl-C sends
+
+  then(onOk, onErr)  // auto-starts; resolves ProcessResult
+  catch(onErr)
+  finally(onFinally)
+
+  [Symbol.asyncIterator]()   // yields stdout chunks
+}
+```
+
+### Result and error semantics
+
+- Exit code `0` resolves a `ProcessResult` after both process close and stream
+  drain, so `output` is complete rather than racing the final chunk.
+- A nonzero exit rejects a `ProcessError` carrying the code, `output`, and
+  `debug` — unless `throw: false`, which resolves a `ProcessResult` with
+  `.error` set instead.
+- A spawn failure surfaces through the child's `error` event as a
+  `ProcessError` whose `code` is the errno string — `"ENOENT"` for a missing
+  command — and whose message is Node's own (`spawn foo ENOENT`).
+
+  An earlier draft of this document said a missing command maps to exit code
+  `127`, inherited from `architecture.md` and never checked. It is wrong, and
+  the build is what proved it: `.sync` has always reported `"ENOENT"` here,
+  so mapping the asynchronous path to `127` would make the two disagree about
+  the same failure. 127 does appear, but from the shell rather than from us —
+  when `shell: true`, the shell reports "command not found" as exit 127 and
+  never raises an `error` event at all.
+
+- A timeout is a failure even when the child exits cleanly. Well-behaved
+  programs handle termination and exit `0`, so exit status alone cannot tell
+  a command that finished from one that ran out of time.
+
+- A nonzero exit produces the message `Command failed with exit code N`, with
+  the child's trimmed stderr appended after a colon when there is any. That
+  is what makes a "command not found" failure name the command that was not
+  found, rather than reporting a bare number.
+- A command a signal ended has no exit code, so it does not report one:
+  `code` is `undefined`, `signal` names what ended it, and the message is
+  `Command was killed by SIGTERM: <command>`.
+
+  This is the missing-command lesson applied a second time. Both paths used
+  to say `Command failed with exit code null` — a number that was never
+  there — and then disagree about what to put beside it, `128` from the
+  asynchronous path and `null` from `.sync`. Every `stop()`, `kill()`,
+  `interrupt()`, abort, and outside `kill` printed it. One helper now builds
+  this for both paths, so they cannot drift again.
+
+- **`timedOut` and `aborted` say why, and never both.** An exit code cannot
+  distinguish a cancelled command from a crashed one, and cancellation
+  exists precisely so that a caller can tell. `timedOut` was already there
+  for a deadline; `aborted` is its counterpart for an `AbortSignal`.
+
+  Only the reason that *began* the shutdown is recorded. `stop()` is not
+  instantaneous — it terminates politely and escalates after `gracePeriod` —
+  so a deadline and an abort can both arrive before the child is gone, and
+  the first version of this set both. That made the order of a caller's
+  checks decide the answer: the documented `if (error.aborted) return;`
+  swallowed a timeout and skipped the retry it was written to trigger. A
+  later cause is real but it is not the reason, so it is not recorded.
+
+- **`.sync` honours an abort raised before the call**, refusing to run the
+  command, because the alternative was `signal` meaning two different things
+  depending on how the command was called. An abort arriving *during* the
+  call is unobservable — nothing is observable during a blocking call — and
+  that is the same bargain `timeout` strikes on this path.
+- `config` is deep-frozen, including nested objects, so a caller cannot mutate
+  a running process's configuration.
+
+### Two questions, not one
+
+Running a command raises two independent questions, and conflating them is
+what produced the defects this section exists to prevent:
+
+1. **Do you want to see it?** Output echoed to your terminal as it happens —
+   `output` and `debug`, or the `live` and `interactive` shortcuts.
+2. **Do you want to analyse it?** The program holding the output as a value
+   afterwards — `capture`.
+
+Either answer can be yes or no, independently. Watching a test suite scroll
+past *and* parsing its failures afterwards is a normal thing to want, and so
+is a silent command whose output you only read at the end.
+
+There is a third destination worth naming, because it is what makes turning
+capture off safe: **consuming it yourself**, through iteration, `pipe`, or the
+`output` stream. Those are unaffected by `capture` — it governs what the
+*result* holds, not what the caller can see.
+
+### What capture costs, and when
+
+Intent decides, but boundedness decides the stakes, and both matter:
+
+- **Finite output** — `cat data.json`, `git log`, `find .`. Capture costs
+  memory proportional to the output, once. Fine when you want the value, and
+  merely wasteful when you do not.
+- **Unbounded output** — `npm run dev`, `tail -f`, a watcher. Capture has no
+  end, so the cost is unbounded rather than merely wasteful. Measured on a
+  noisy command: 16MB in 1.5 seconds, roughly 38GB over an hour of a dev
+  server, until memory or the string limit runs out.
+
+So intent says whether to capture; boundedness says what it costs if you get
+that wrong. A 50MB `pg_dump` is perfectly finite and still belongs on disk
+rather than in a string, which is why the question is what you mean to do
+with the output rather than how much of it there is.
+
+`capture` takes:
+
+- **`true`** (default) — collect it, bounded by what a string can hold. That
+  bound is a safety net rather than a policy: it stops a runaway from taking
+  the host down, and is not a number to plan around.
+- **`false`** — collect nothing. `output` and `debug` are empty and memory
+  stays flat however long the command runs. The streams still carry every
+  byte, so iteration, pipelines, and forwarding are unaffected — not
+  capturing is about what the *result* holds, not about what the caller can
+  see.
+- **a number** — collect at most that many bytes.
+
+When a limit is reached the **oldest** bytes go and `truncated` is set on the
+result. Keeping the end is deliberate: whatever made a command outproduce its
+own result is diagnosed from the end — the error, the last thing it managed —
+and keeping the beginning would discard exactly the part worth having.
+
+**Buffering to disk was considered and rejected.** It answers where the bytes
+go without answering the question that matters, which is that a
+multi-gigabyte string cannot be handed to the caller either way. It would add
+temporary-file lifecycle, cleanup after a crash, and — for a library whose
+purpose is not leaking things — command output sitting in a shared temporary
+directory. A caller who wants a large output on disk already has a direct way
+to say so, and it reads better than any option would:
+
+```javascript
+await sh`pg_dump mydb`.pipe(createWriteStream("dump.sql"));
+```
+
+### Shortcuts bundle settings; callers still get the last word
+
+`live`, `interactive`, `safe`, and `sync` are bundles of the settings above,
+and a bundle may well couple the two questions — `live` is about seeing the
+output, and it is reasonable for it to have an opinion about keeping it.
+
+What makes that safe is that the coupling lives in the *configuration*, where
+later settings win, and never in the *interpretation*. Choosing how to see
+the output must not decide, irrevocably, whether it is kept:
+
+```javascript
+await sh.live`npm test`;                      // whatever live says
+await sh.live({ capture: false })`npm run dev`;  // seen, not kept
+await sh.live({ capture: true })`npm test`;      // seen and kept
+```
+
+A caller's own configuration therefore overrides a shortcut's, in every
+chainable. That was not true until it was tested for: `sh.live({ output:
+false })` forwarded anyway, `sh.interactive({ input: false })` inherited
+stdin anyway, and `sh.safe({ throw: true })` swallowed the error anyway,
+because each shortcut merged its own settings last. A bundle you cannot
+adjust is not a shortcut, it is a cage.
+
+### Configuration
+
+The existing keys are unchanged. `output`, `debug`, and `input` name the
+process's three streams, and they keep that meaning at every point in the
+lifecycle: `output: true` configures it, `proc.output` is it flowing, and
+`result.output` is it finished. One concept, three moments.
+
+- **`immediate`** — boolean, default `true`. Start on construction rather
+  than waiting for `start()`.
+- **`shell`** — boolean or string, default `true`. `true` runs through the
+  shell the library selects; a string names one — `"/bin/dash"`, `"zsh"`, a
+  path — for a caller who wants their own. `false` executes directly.
+- **`output`** — boolean, default `false`. Stream stdout to the parent live.
+- **`debug`** — boolean, default `false`. Stream stderr to the parent live.
+- **`input`** — boolean, string, or stream. `true` inherits the parent's
+  stdin; a string or stream is written to the child.
+- **`throw`** — boolean, default `true`. Reject on failure, or resolve a
+  result carrying `.error`.
+- **`color`** — boolean. Force colour on or off in the child. Unset leaves
+  the child to decide.
+- **`env`** — object. Variables, merged over `process.env`.
+- **`cwd`** — string. Working directory.
+- **`capture`** — boolean or number, default `true`. Whether the result
+  carries the output, and at most how many bytes.
+
+Three keys are new:
+
+- **`timeout`** — duration. Stop the process after this long. No default,
+  matching Node.
+- **`gracePeriod`** — duration, default `5000`. How long a polite stop is
+  given before it escalates to an unrefusable kill. `0` kills immediately;
+  `Infinity` waits as long as the process needs.
+- **`signal`** — an `AbortSignal`. Aborting kills the process.
+
+```javascript
+await sh({ timeout: "30s" })`npm test`;
+await proc.stop({ gracePeriod: "2s" });
+await proc.stop({ gracePeriod: Infinity });   // wait it out
+```
+
+### Durations
+
+Every duration accepts a number of milliseconds or a string with a unit.
+Numbers keep the library compatible with Node's own conventions and with any
+value a caller already computed; strings make the common literal readable.
+
+```javascript
+sh({ timeout: 30_000 })   // milliseconds, as Node expresses durations
+sh({ timeout: "30s" })    // identical, and easier to read at a glance
+```
+
+The string grammar is deliberately small: a number, optionally fractional,
+followed by one unit of `ms`, `s`, `m`, or `h`. `"0.5s"` is 500ms. Compound
+forms like `"1m30s"` are **not** accepted — allowing them means deciding about
+`"1h 2m 3s"`, whitespace, ordering, and repetition, and `90_000` or `"90s"`
+already says it. A unitless string such as `"30"` is a **`TypeError`**, not a
+silent guess: the whole point of the string form is that the unit is visible,
+so a string without one is a mistake worth catching at the call site rather
+than a value worth interpreting.
+
+Invalid durations throw when the configuration is built, not when the process
+runs, matching the library's existing habit of rejecting bad input at the
+boundary rather than carrying it inward.
+
+### Designing these keys
+
+The alternatives considered, and why these won.
+
+**`gracePeriod` is the ops vocabulary, and there was no single convention to
+follow.** Two clusters exist. Kubernetes says `terminationGracePeriodSeconds`
+and Docker Compose says `stop_grace_period`; systemd says `TimeoutStopSec`,
+AWS ECS says `stopTimeout`, and PM2 says `kill_timeout`. The nearest JS
+precedent, execa, says `forceKillAfterDelay`. "Grace period" is the phrase
+most readers have already met, and it survives the unit suffix being dropped —
+`timeout` carries none, and one object should not mix two conventions.
+
+**Unbounded patience is a first-class case, not an escape hatch.** It is
+tempting to argue that processes needing a long, uninterrupted shutdown —
+a database flushing a buffer pool, an encoder finishing a file write, a worker
+draining a queue — belong to service managers rather than to a shell library.
+That is wrong, and it mistakes which process is which. This library's *host*
+may well be supervised by systemd; what it spawns is a different matter
+entirely. A Node service under systemd that runs `ffmpeg`, a worker pool, a
+local database, or a dev server is the supervisor of those children, and when
+its own `SIGTERM` arrives it has to shut them down properly. The graceful
+shutdown the host was given is exactly what it must pass on, and five seconds
+is frequently not enough. Supervising children is a core use of this library,
+not an edge of it.
+
+**`Infinity` expresses that, not `false`.** A duration field should hold
+a duration at every setting. `false` forces the reader to learn that this one
+key is sometimes a boolean, and it reads as "grace period: off", which is the
+opposite of what it means — no escalation is the *most* patient setting, not
+the least. `Infinity` is a legitimate value of the same type and says exactly
+what happens: wait without bound. `0` sits at the other end and means kill at
+once.
+
+**The name `signal` is free, and means what Node means by it.** It would have
+been a trap beside a `signal(name)` method that delivered POSIX signals — but
+that method does not exist, because stopping is expressed as `stop()`,
+`kill()`, and `interrupt()`. With no competing meaning inside this API, the
+key can match Node's `spawn` option exactly, which is what a reader coming
+from `child_process` or `fetch` will expect.
+
+An abort maps to `kill()`, not `stop()`: `abort` means *now* everywhere else
+in the platform, and a graceful-stop interpretation would make this library's
+`signal` behave differently from every other consumer of the same protocol.
+
+The value of accepting one is composition rather than cancellation — `stop()`
+and `timeout` already cancel. It earns its place where a signal already exists
+in the surrounding code:
+
+```javascript
+app.get("/render", async (req, res) => {
+  const signal = AbortSignal.any([req.signal, AbortSignal.timeout("30s")]);
+  const svg = await fetch(url, { signal });
+  const png = await sh({ signal })`convert - out.png`;
+  res.send(png.output);
+});
+```
+
+Without it, that handler hand-writes a bridge from the abort event to
+`proc.kill()`. With it, one signal governs the fetch and the process alike.
+
+**The clock starts when the process starts**, not when it is constructed. With
+`immediate: false` a process can sit unstarted indefinitely, and a deadline
+measured from construction could expire before anything ran.
+
+**A timeout is reported with `timedOut: true` on `ProcessError`.**
+`ProcessError.code` already holds the numeric exit code, so `"ETIMEDOUT"`
+there would overload one field with two types, and a `TimeoutError` subclass
+forces `instanceof` checks on callers who want a boolean.
+
+`.sync` put `"ETIMEDOUT"` there anyway — this paragraph argued against the
+thing the code beside it did, and the asynchronous path reported `null` for
+the same case, so one fact had two spellings across two paths. `code` is now
+the exit code the command chose, the platform's errno string when the spawn
+itself failed, and `undefined` when a signal ended the command before it
+could choose one.
+
+**Shape: flat, not nested.** `timeout: { after, gracePeriod }` groups the
+related keys, but "just give me a deadline" is the common case by a wide
+margin, and nesting turns it into `timeout: { after: "30s" }`.
+
+**An idle timeout is out of scope.** "No output for N seconds" is a genuine
+feature, common in CI runners, but it measures silence rather than duration,
+and nothing here needs it.
+
+`sync` is not a `Process` option. Synchronous execution bypasses this class
+entirely — see below.
+
+## Stopping a process
+
+Node exposes `child.kill(signal)` and nothing else, which means a caller has
+to know what `SIGTERM` and `SIGKILL` mean before they can stop anything. The
+vocabulary that already explains itself comes from containers, where the words
+are settled: `docker stop` sends `SIGTERM`, waits, then escalates to
+`SIGKILL`; `docker kill` sends `SIGKILL` outright. Kubernetes and systemd use
+the same shape with different grace periods — 30s and 90s respectively.
+
+So this class borrows that vocabulary rather than inventing one:
+
+```javascript
+await proc.stop();       // terminate politely; escalate if ignored
+await proc.kill();       // immediate, cannot be refused
+await proc.interrupt();  // what Ctrl-C does
+```
+
+| Method        | Signal            | Meaning                              |
+| ------------- | ----------------- | ------------------------------------ |
+| `stop()`      | TERM, then KILL   | Wind down; force only if it refuses  |
+| `kill()`      | KILL              | Die now, no cleanup possible         |
+| `interrupt()` | INT               | The same thing Ctrl-C sends          |
+
+Each resolves once the process has actually exited, so a caller can await a
+clean shutdown.
+
+**Signals reach the whole process group, not just the child.** The child is
+spawned as its own group leader and stopping it signals the group. Without
+that, stopping a shell-wrapped command stops only the shell: `` sh`sleep 30` ``
+would terminate the shell and leave `sleep` running, still holding the output
+pipe open, so the process would not even appear to have finished. That is not
+a theoretical concern — it showed up as a `stop()` test taking thirty seconds
+to do something that should take milliseconds.
+
+**No raw signal method ships.** These three verbs describe *intent* — what a
+caller wants to happen to the process. A signal is a *mechanism*, and the gap
+between the two is the thing worth hiding: a caller who wants a dev server to
+shut down cleanly should not have to know that the way to say so is `SIGTERM`
+rather than `SIGQUIT`, or that one of them is catchable and the other is not.
+
+The three verbs cover what callers of *this* library actually do: stop a dev
+server, force-kill something wedged, and send the Ctrl-C an interactive
+program is waiting for. The signals they would reach past this API for —
+`SIGHUP` to reload a config, `SIGUSR1` to trigger a dump — belong to daemon
+management, and someone managing a long-lived daemon is reaching for systemd
+or a process supervisor, not a template-tag shell library. Serving those cases
+would mean serving a user this library does not have.
+
+A raw signal method would also re-export exactly the platform detail the rest
+of the design works to absorb: which signals exist, and what they do, varies
+by platform. Having just decided the library picks its own shell so callers
+need not care about the host, handing back `SIGHUP` strings would undo that in
+the same breath.
+
+Stopping a pipeline stops every stage.
+
+### Timeouts
+
+`timeout` is the same escalation on a clock, which is what every system that
+implements timeouts does:
+
+```javascript
+await sh({ timeout: 30_000 })`npm test`;
+// 30s → SIGTERM → graceMs → SIGKILL → rejects
+```
+
+The rejection is a `ProcessError` with `timedOut: true`, carrying whatever
+output was captured before the process was stopped — a timeout is a failure
+with evidence, not a blank one. `gracePeriod` defaults to 5000ms. There is no
+default timeout, matching Node.
+
+#### Timeouts in `.sync`
+
+`spawnSync` takes `timeout` natively, so synchronous timeouts are ordinary
+and `.sync` honours them. The escalation, however, is impossible: sending
+`SIGTERM`, waiting, then sending `SIGKILL` requires doing something while
+waiting, and a blocking call has no turn in which to do it. `spawnSync` gets
+to send exactly one signal at the deadline.
+
+So `.sync` sends **`SIGKILL`** at the deadline rather than `SIGTERM`, because
+a child that ignored `SIGTERM` would otherwise blow through the deadline and
+hang the call — the worst outcome in the one mode where the caller cannot
+intervene. `gracePeriod` is meaningless synchronously and is ignored. The result
+carries `timedOut: true` exactly as the asynchronous form does.
+
+The promise is therefore identical across modes — the deadline is enforced and
+the failure is labelled — while the mechanism differs because the modes
+genuinely differ. That asymmetry is documented rather than discovered.
+
+`.safe` applies here as everywhere: a timed-out process under `throw: false`
+resolves a `ProcessResult` with `ok: false` and `.error.timedOut` set.
+
+## Live mode
+
+`.live` forwards stdout and stderr to the parent while still capturing both,
+and does **not** inherit stdin. It is the gap between a plain call, which
+captures silently, and `.interactive`, which also hands the child the parent's
+keyboard:
+
+| Mode            | stdin inherited | output forwarded | captured |
+| --------------- | --------------- | ---------------- | -------- |
+| plain           | no              | no               | yes      |
+| `.live`         | no              | yes              | yes      |
+| `.interactive`  | yes             | yes              | yes      |
+
+It is a configuration alias — `{ output: true, debug: true }` — not a separate
+execution path, and it composes with the other chainables (`sh.safe.live`,
+`sh.live({ timeout: 60_000 })`).
+
+### Color in live mode
+
+Forwarding hands the child a pipe rather than a terminal, and colour-aware
+tools check exactly that before emitting ANSI. So live output is *not*
+automatically coloured, and the library does not force it to be: `color`
+unset leaves the child to decide from its own environment.
+
+### How a child decides
+
+No central authority decides; each tool consults roughly the same ladder:
+
+1. **Is stdout a terminal?** Piped output means `isTTY` is false, and most
+   tools default colour off on the assumption that the bytes are being
+   captured rather than read. Forwarding creates exactly this situation.
+2. **Environment overrides** — `FORCE_COLOR` to emit anyway, `NO_COLOR` to
+   never emit.
+3. **The long tail** — `TERM=dumb`, CI detection, explicit `--color` flags.
+
+Measured against Node's own test runner: piped with no environment it emits
+no escape codes; with `FORCE_COLOR=1` it emits `^[[34m`.
+
+`color: true` sets `FORCE_COLOR=1` in the child environment, the Node
+ecosystem's convention, honoured by chalk, npm, jest, and vitest. `color:
+false` sets `NO_COLOR=1`, the cross-language convention from no-color.org.
+
+The library never calls `isTTY` itself. It appears in that ladder as an
+explanation of what the *child* does, not as something this code consults —
+and the design deliberately keeps it that way: `color` unset means the library
+adds nothing and the child decides from its own environment, which is one
+fewer piece of magic to explain. The alternative would be a `color: "auto"`
+default that mirrors the parent's terminal-ness into the child, so that live
+output looks the way it would if the command had been run by hand. That is
+defensible and remains available later; it is not the default because "unset
+means we do not interfere" is easier to reason about than a rule that reads
+the parent's environment behind the caller's back.
+
+**The library never sets both**, because whichever `color` asks for clears
+the other. The guarantee is about what this code sets: left unset it adds and
+removes nothing, so the child inherits an environment that may hold neither
+or both, which is the caller's to arrange. Precedence between them is
+implementation-dependent: no-color.org recommends `NO_COLOR` win, but Node 24
+does the opposite — `FORCE_COLOR=1 NO_COLOR=1 node --test` still emits colour.
+Setting both would make the library's behaviour depend on which tool the
+caller happened to run.
+
+Captured output is **not** stripped of escape codes. No convention asks a
+process runner to rewrite a child's bytes, and a caller who forced colour on
+asked for what arrived.
+
+## Integration with `sh` and `cmd`
+
+The tags build a command string and return a `Process`:
+
+```javascript
+const proc = sh`echo ${name}`;        // a Process, started immediately
+const result = await proc;            // ProcessResult
+
+const deferred = sh({ immediate: false })`long-job`;
+deferred.output.on("data", onChunk);  // attach before anything runs
+await deferred.start();
+```
+
+Every chainable — `.safe`, `.interactive`, `.input(data)`, and their
+combinations — merges configuration into the constructor rather than taking a
+separate code path. `sh({ ... })` already returns a configured tag today, so
+that plumbing partly exists.
+
+`.sync` keeps `spawnSync` and returns a `ProcessResult` directly. A
+synchronous call cannot return a thenable and pretend to be one, so it does
+not construct a `Process` at all.
+
+`executeAsyncCommand()` is deleted. Its stream handling becomes this class's
+internals; there is no second engine left behind.
+
+## Behaviors
+
+One behavior per test, derived from the decisions above. This list is the
+contract the implementation is written against; progress is tracked on the
+issue rather than in a checklist file.
+
+**Streams and lifecycle**
+
+1. `output`, `debug`, and `input` are non-null before `start()`.
+2. Each is identity-stable across `start()`.
+3. A handler attached before `start()` receives data after it.
+4. Input written before `start()` reaches the child.
+5. Multiple pre-start writes preserve order.
+6. Piping a source into `input` does not eagerly drain it.
+7. `output` and `debug` emit nothing before `start()`.
+8. `start()` on an already-started process is a no-op, not a throw.
+9. `start()` returns `this`.
+10. `started` reflects whether a child exists.
+11. `config` is frozen, including nested objects.
+12. `command` returns the resolved command string.
+13. `shell` reports the selected shell.
+
+**Result semantics**
+
+14. `then` exists and auto-starts a deferred process.
+15. Exit `0` resolves a `ProcessResult` with complete `output`.
+16. Nonzero exit rejects a `ProcessError` with code, `output`, and `debug`.
+17. `throw: false` resolves a `ProcessResult` with `.error` set.
+18. `catch` behaves as the Promise analogue.
+19. `finally` behaves as the Promise analogue.
+20. A spawn failure surfaces a `ProcessError` carrying the errno string as
+    its code, agreeing with `.sync`.
+21. `cwd` is honored.
+22. `env` is the child's environment, replacing rather than extending it.
+    → env replaces the environment rather than extending it
+
+**Capture and forwarding**
+
+23. stdout is captured on the result.
+24. stderr is captured on the result.
+25. `output: false` keeps nothing and sends it nowhere.
+    → a port takes nothing, the result, a stream, or a list
+26. `debug: false` keeps nothing and sends it nowhere.
+    → a port that was not kept reads as undefined, not empty
+
+**Iteration**
+
+27. Iterating a process yields stdout chunks.
+28. Iterating a failing command throws the `ProcessError` at stream end.
+29. Awaiting after iterating still resolves a complete `ProcessResult`.
+30. Abandoning iteration early does not leave the child unreaped.
+
+**Pipelines**
+
+31. `pipe` with a template tag returns a pipeline whose tail is a `Process`.
+32. `pipe` with an argv array returns a pipeline, running without a shell.
+33. `pipe` auto-starts the source.
+34. Interpolation in a `pipe` tag is escaped.
+35. A two-command chain moves data end to end.
+36. A three-command chain composes.
+37. `pipe` accepts a transform stream as a stage.
+38. `proc.pipe(gzip).pipe(file)` wires stdout → gzip → file, verified by
+    reading the bytes back, rather than forking stdout two ways.
+39. A chain mixing stream and command stages composes.
+40. Awaiting a chain ending in a file sink settles only after the bytes land.
+41. Iterating a chain yields the tail's output.
+42. A chain rejects with the first failing stage's error.
+43. The rejection identifies which stage failed.
+44. `.safe` on a chain resolves `ok: false` naming the failing stage.
+45. Per-stage config lets one stage swallow while others do not.
+46. A mid-chain stream error propagates rather than hanging the chain.
+
+**Shell selection and integration**
+
+47. `` sh`cat missing.txt | wc -l` `` rejects, because pipeline failure
+    reporting is on in the selected shell.
+48. The same command yields the same result and error shape across supported
+    shells.
+49. `` sh`cmd` `` returns a `Process`.
+50. `` cmd`cmd` `` returns a `Process`.
+51. `sh({ immediate: false })` defers.
+52. `.safe`, `.interactive`, and `.input(data)` merge config into the
+    constructor, including in combination.
+53. `.sync` returns a `ProcessResult` directly and constructs no `Process`.
+
+**Lifecycle control**
+
+54. `stop()` terminates politely and resolves once the process exits.
+55. `stop()` escalates to an unrefusable kill after `gracePeriod` if the
+    process ignores the polite request.
+56. `stop({ gracePeriod })` overrides the escalation delay for one call.
+57. `gracePeriod: Infinity` waits without bound; `0` kills at once.
+58. `kill()` terminates immediately and unrefusably.
+59. `interrupt()` delivers the equivalent of Ctrl-C.
+60. Stopping an already-exited process is a no-op, not a throw.
+61. Stopping a pipeline stops every stage.
+62. `timeout` stops a process at the deadline and rejects a `ProcessError`
+    with `timedOut: true`. A signal ended it, so there is no exit code.
+    → timeout stops the process and reports timedOut
+63. The timeout clock starts when the process starts, not when constructed.
+64. A timed-out rejection carries the output captured before the stop.
+65. Under `throw: false`, a timeout resolves `ok: false` with
+    `.error.timedOut`.
+66. `.sync` honours `timeout`, enforcing the deadline unrefusably and setting
+    `timedOut`.
+
+**Live mode**
+
+67. `.live` forwards stdout and stderr while still capturing both.
+68. `.live` does not inherit stdin.
+69. `.live` composes with the other chainables.
+70. No colour variable is ever set. A child decides for itself by asking
+    `isatty`, which is why there is no `color` option.
+    → color unset adds neither variable
